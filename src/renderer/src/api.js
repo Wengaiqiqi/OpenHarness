@@ -17,15 +17,21 @@ const clean = (v) => {
   }
 }
 
-const raw = { ...window.api }
-
-const api = {}
-for (const name of Object.keys(raw)) {
-  const fn = raw[name]
-  api[name] =
-    typeof fn === 'function'
-      ? (...args) => fn(...args.map(clean))
-      : fn
-}
+// 不在模块加载时固化方法表：dev 热更时 renderer 可能先于 preload 重载，
+// 固化 spread 会把旧接口表冻结导致 "api.xxx is not a function"。
+// 改为调用时实时从 window.api 取，天然与 preload 当前版本对齐。
+const api = new Proxy(
+  {},
+  {
+    get(_t, name) {
+      const fn = window.api?.[name]
+      if (typeof fn !== 'function') return fn
+      return (...args) => fn(...args.map(clean))
+    },
+    has(_t, name) {
+      return !!window.api && name in window.api
+    }
+  }
+)
 
 export { api }

@@ -3,7 +3,9 @@ import { api } from '@/api'
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Promotion, Delete, VideoPause, EditPen } from '@element-plus/icons-vue'
+import { useAppStore } from '@/store/app'
 
+const appStore = useAppStore()
 const sessions = ref([])
 const activeId = ref(null)
 const input = ref('')
@@ -369,7 +371,7 @@ onUnmounted(() => unsubscribe?.())
           </div>
         </div>
         <div v-else class="welcome">
-          <div class="welcome-mark">OH</div>
+          <img :src="appStore.theme === 'dark' ? '/logo-dark.png' : '/logo.png'" class="welcome-mark" alt="OpenHarness" />
           <h2 class="welcome-title">开始一段新对话</h2>
           <p class="welcome-sub">选择上方的 Provider 与模型，或从这些问题开始：</p>
           <div class="welcome-chips">
@@ -697,16 +699,11 @@ onUnmounted(() => unsubscribe?.())
 }
 
 .welcome-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 52px;
   height: 52px;
   border-radius: 14px;
   margin-bottom: 16px;
-  font-weight: 700;
-  color: #fff;
-  background: var(--oh-primary);
+  object-fit: contain;
 }
 
 .welcome-title {

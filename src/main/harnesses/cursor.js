@@ -5,6 +5,7 @@ const cursor = {
   name: 'Cursor',
   desc: 'AI 代码编辑器，支持 MCP',
   color: '#4b8bbe',
+  icon: 'https://cdn.simpleicons.org/cursor/4b8bbe',
   processHints: ['Cursor'],
   exeCandidates: [`${LOCALAPPDATA}\\Programs\\cursor\\Cursor.exe`, `${LOCALAPPDATA}\\Programs\\Cursor\\Cursor.exe`],
   configCandidates: [`${USERPROFILE}\\.cursor\\mcp.json`],

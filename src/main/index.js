@@ -36,6 +36,7 @@ function createWindow() {
     minHeight: 600,
     show: false,
     backgroundColor: '#131316',
+    icon: path.join(__dirname, '../renderer/logo.png'),
     title: 'OpenHarness',
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
@@ -136,9 +137,9 @@ ipcMain.handle('harness:list', async () => {
   for (const adapter of harnessRegistry.all()) {
     try {
       const info = await adapter.detect()
-      results.push({ ...info, id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color })
+      results.push({ ...info, id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon })
     } catch (err) {
-      results.push({ id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, installed: false, error: String(err) })
+      results.push({ id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon, installed: false, error: String(err) })
     }
   }
   return results

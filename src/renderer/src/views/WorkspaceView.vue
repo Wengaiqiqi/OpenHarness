@@ -23,6 +23,10 @@ const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.val
 // 尚未打开且已安装的 harness，供"+"下拉选择
 const addable = computed(() => harnessList.value.filter((h) => h.installed && !tabs.value.some((t) => t.id === h.id)))
 
+function tabIcon(id) {
+  return harnessList.value.find((h) => h.id === id)?.icon || null
+}
+
 function hostRect() {
   const r = hostEl.value?.getBoundingClientRect()
   return r ? { x: r.left, y: r.top, width: r.width, height: r.height } : { x: 0, y: 0, width: 100, height: 100 }
@@ -162,6 +166,7 @@ onBeforeUnmount(() => {
           @click="activateTab(t)"
         >
           <span class="ws-dot" :style="{ background: t.color }" />
+          <img v-if="tabIcon(t.id)" :src="tabIcon(t.id)" class="ws-tab-icon" alt="" />
           <span class="ws-tab-name">{{ t.name }}</span>
           <el-icon class="ws-tab-close" @click.stop="closeTab(t)"><Close /></el-icon>
         </div>
@@ -187,7 +192,8 @@ onBeforeUnmount(() => {
           class="ws-add-bar-item"
           @click="addTab(h)"
         >
-          <span class="ws-add-dot" :style="{ background: h.color }" />
+          <img v-if="h.icon" :src="h.icon" class="ws-tab-icon" alt="" />
+          <span v-else class="ws-add-dot" :style="{ background: h.color }" />
           {{ h.name }}
         </button>
       </template>
@@ -363,6 +369,13 @@ onBeforeUnmount(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ws-tab-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
   flex-shrink: 0;
 }
 

@@ -2,9 +2,11 @@
 import { api } from '@/api'
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAppStore } from '@/store/app'
 import { Refresh, Right } from '@element-plus/icons-vue'
 
 const router = useRouter()
+const store = useAppStore()
 const harnesses = ref([])
 const loading = ref(false)
 
@@ -20,13 +22,20 @@ const installedCount = computed(() => harnesses.value.filter((h) => h.installed)
 async function load() {
   loading.value = true
   try {
-    harnesses.value = await api.harnessList()
+    const list = (await api.harnessList()) || []
+    // 已安装排前面（与 Harness 页一致），新装应用刷新后自动靠前
+    harnesses.value = [...list.filter((h) => h.installed), ...list.filter((h) => !h.installed)]
   } finally {
     loading.value = false
   }
 }
 
 onMounted(load)
+
+/** 首页卡片点击：已安装的直接进工作台打开 */
+function openWorkspace(h) {
+  if (h.installed) router.push({ path: '/workspace', query: { id: h.id } })
+}
 </script>
 
 <template>
@@ -62,8 +71,18 @@ onMounted(load)
         <el-button :icon="Refresh" text :loading="loading" @click="load">刷新</el-button>
       </div>
       <div v-if="harnesses.length" class="status-grid">
-        <div v-for="h in harnesses" :key="h.id" class="card card-hover status-card">
-          <span class="status-dot" :class="h.installed ? 'on' : 'off'" />
+        <div
+          v-for="h in harnesses"
+          :key="h.id"
+          class="card status-card"
+          :class="{ 'status-card-open': h.installed }"
+          :title="h.installed ? '点击在工作台打开' : '未检测到，无法打开'"
+          @click="openWorkspace(h)"
+        >
+          <div class="status-icon" :class="{ off: !h.installed }">
+            <img v-if="h.icon" :src="h.icon" :class="{ 'icon-invert': h.id === 'opencode' && store.theme === 'dark' }" alt="" />
+            <span v-else class="status-dot" :class="h.installed ? 'on' : 'off'" />
+          </div>
           <div class="status-name" :title="h.name">{{ h.name }}</div>
           <div class="status-tag">{{ h.installed ? '已安装' : '未检测到' }}</div>
         </div>
@@ -188,6 +207,20 @@ onMounted(load)
   padding: 14px 16px;
 }
 
+.status-card-open {
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--oh-primary);
+    background: var(--oh-active);
+    transform: translateY(-2px);
+
+    .status-tag {
+      color: var(--oh-primary);
+    }
+  }
+}
+
 .status-dot {
   width: 9px;
   height: 9px;
@@ -202,6 +235,31 @@ onMounted(load)
     background: var(--oh-text-dim);
     opacity: 0.5;
   }
+}
+
+.status-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: none;
+
+  &.off img {
+    opacity: 0.35;
+    filter: grayscale(1);
+  }
+
+  img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+  }
+}
+
+.icon-invert {
+  filter: invert(1);
 }
 
 .status-name {

@@ -32,7 +32,7 @@ onMounted(() => store.init())
   <div class="app-shell">
     <aside class="icon-rail">
       <div class="logo">
-        <span class="logo-mark">OH</span>
+        <img :src="store.theme === 'dark' ? '/logo-dark.png' : '/logo.png'" class="logo-mark" alt="OpenHarness" />
       </div>
       <nav class="rail-nav">
         <div
@@ -83,17 +83,9 @@ onMounted(() => store.init())
 }
 
 .logo-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: 12px;
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 0.02em;
-  color: #fff;
-  background: var(--oh-primary);
+  object-fit: contain;
 }
 
 .rail-nav {

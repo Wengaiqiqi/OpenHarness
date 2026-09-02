@@ -5,6 +5,7 @@ const vscode = {
   name: 'VS Code',
   desc: 'Visual Studio Code（Copilot MCP 模式）',
   color: '#23a9f2',
+  icon: 'https://api.iconify.design/vscode-icons:file-type-vscode.svg',
   processHints: ['Code', 'Code - Insiders'],
   exeCandidates: [
     `${LOCALAPPDATA}\\Programs\\Microsoft VS Code\\Code.exe`,

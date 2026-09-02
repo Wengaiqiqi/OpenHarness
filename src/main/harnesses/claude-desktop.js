@@ -5,6 +5,7 @@ const claudeDesktop = {
   name: 'Claude Desktop',
   desc: 'Anthropic 官方桌面端，支持 MCP',
   color: '#d97757',
+  icon: 'https://cdn.simpleicons.org/claude/d97757',
   processHints: ['Claude'],
   exeCandidates: [`${LOCALAPPDATA}\\AnthropicClaude\\claude.exe`, `${LOCALAPPDATA}\\AnthropicClaude\\Claude.exe`],
   configCandidates: [`${process.env.APPDATA}\\Claude\\claude_desktop_config.json`],

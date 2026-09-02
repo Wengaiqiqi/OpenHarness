@@ -6,6 +6,7 @@ const openclaw = {
   name: 'OpenClaw',
   desc: '个人 AI 助理 Gateway，实验性检测',
   color: '#a78bfa',
+  icon: '/icons/openclaw.svg',
   processHints: ['openclaw'],
   exeCandidates: [`${USERPROFILE}\\.openclaw\\bin\\openclaw.cmd`, `${APPDATA}\\npm\\openclaw.cmd`],
   configCandidates: [`${USERPROFILE}\\.openclaw\\openclaw.json`, `${USERPROFILE}\\.openclaw\\clawdbot.json`],

@@ -3,9 +3,11 @@ import { api } from '@/api'
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { useAppStore } from '@/store/app'
 import { Refresh, VideoPlay, FolderOpened, Link } from '@element-plus/icons-vue'
 
 const router = useRouter()
+const appStore = useAppStore()
 const harnesses = ref([])
 const loading = ref(false)
 const injectVisible = ref(false)
@@ -16,7 +18,9 @@ const selectedMcp = ref([])
 async function load() {
   loading.value = true
   try {
-    harnesses.value = await api.harnessList()
+    const list = (await api.harnessList()) || []
+    // 已检测到（可开启）的排前面，未安装的沉底；新装的应用重新扫描后自动靠前
+    harnesses.value = [...list.filter((h) => h.installed), ...list.filter((h) => !h.installed)]
   } finally {
     loading.value = false
   }
@@ -82,7 +86,8 @@ onMounted(load)
 
     <div v-else class="harness-list">
       <div v-for="h in harnesses" :key="h.id" class="card card-hover harness-card">
-        <div class="h-badge" :style="{ background: h.color }">{{ h.name.slice(0, 2).toUpperCase() }}</div>
+          <img v-if="h.icon" :src="h.icon" class="h-badge-logo" :class="{ 'h-badge-logo-dark': h.id === 'opencode' && appStore.theme === 'dark' }" alt="" />
+        <div v-else class="h-badge" :style="{ background: h.color }">{{ h.name.slice(0, 2).toUpperCase() }}</div>
         <div class="h-info">
           <div class="h-name">
             {{ h.name }}
@@ -156,6 +161,27 @@ onMounted(load)
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.h-badge-logo {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.h-badge-logo-dark {
+  filter: invert(1);
+}
+
+.h-badge-img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+
+.h-badge-img-dark {
+  filter: invert(1);
 }
 
 .h-info {

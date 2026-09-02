@@ -5,6 +5,7 @@ const windsurf = {
   name: 'Windsurf',
   desc: 'Codeium AI 编辑器，支持 MCP',
   color: '#09b6a2',
+  icon: 'https://cdn.simpleicons.org/windsurf/09b6a2',
   processHints: ['Windsurf'],
   exeCandidates: [`${LOCALAPPDATA}\\Programs\\windsurf\\Windsurf.exe`, `${LOCALAPPDATA}\\Programs\\Windsurf\\Windsurf.exe`],
   configCandidates: [`${USERPROFILE}\\.codeium\\windsurf\\mcp_config.json`],

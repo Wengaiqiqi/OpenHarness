@@ -53,6 +53,17 @@ for ($i=0; $i -lt ${Math.ceil(maxWaitMs / 500)}; $i++) {
   return Number.isFinite(n) && n > 0 ? n : 0
 }
 
+/** 按进程名轮询主窗口句柄（Electron 启动器会退出并把窗口交给子进程，pid 轮询不可靠） */
+export async function findWindowByNamesPoll(processHints = [], maxWaitMs = 20000) {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    const hwnd = await findWindowByNames(processHints)
+    if (hwnd) return hwnd
+    await sleep(500)
+  }
+  return 0
+}
+
 /**
  * 将目标应用主窗口附着（嵌入）到 OpenHarness 窗口内；已附着则直接激活
  * @param {number} parentHwnd OpenHarness BrowserWindow 的 HWND
@@ -76,19 +87,31 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
   // 先找已运行的实例，找不到再冷启动
   let hwnd = await findWindowByNames(processHints)
   let pid = null
+  let coldStart = false
   if (!hwnd && exePath) {
     const r = launchExe(exePath)
     if (!r.ok) return r
     pid = r.pid
-    hwnd = await findWindowByPid(pid)
+    coldStart = true
+    // Electron 启动器（如 Code.exe）会退出并把窗口交给真正的子进程，
+    // 所以 pid 轮询失败时退回按进程名轮询
+    hwnd = await findWindowByPid(pid, 10000)
+    if (!hwnd) hwnd = await findWindowByNamesPoll(processHints, 15000)
   }
   if (!hwnd) {
     return { ok: false, message: '未能找到应用窗口（应用可能启动失败或窗口尚未创建）' }
   }
 
-  // 先还原最大化/最小化状态，否则 Chromium 仍按最大化布局渲染，内容会被裁剪
-  bridge.fire('show', hwnd, SW_RESTORE)
-  await sleep(400)
+  if (coldStart) {
+    // 冷启动：窗口一出现就隐藏，剥样式/附着/定位完成后再显示，
+    // 避免原窗口先闪现在屏幕上再被"吸"进来
+    bridge.fire('show', hwnd, SW_HIDE)
+    await sleep(150)
+  } else {
+    // 已运行实例：先还原最大化/最小化状态，否则 Chromium 仍按最大化布局渲染，内容会被裁剪
+    bridge.fire('show', hwnd, SW_RESTORE)
+    await sleep(400)
+  }
 
   const styleRes = await bridge.send('getstyle', hwnd)
   const origStyle = parseValue(styleRes)
@@ -107,6 +130,10 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
 
   attached.set(harnessId, { hwnd, origStyle, parentHwnd })
   activate(harnessId, initialRect)
+  if (coldStart) {
+    // 冷启动窗口是隐藏着被附着的：定位完成后 RESTORE（清最小化态）再由 activate 的 SW_SHOW 显示
+    bridge.fire('show', hwnd, SW_RESTORE)
+  }
   return { ok: true, hwnd, pid, launched: !!pid }
 }
 

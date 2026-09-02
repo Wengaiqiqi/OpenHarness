@@ -66,7 +66,9 @@ function buildStdioEntry(server) {
 function launchExe(exePath, args = []) {
   if (!exists(exePath)) return { ok: false, message: `未找到可执行文件: ${exePath}` }
   try {
-    const child = spawn(exePath, args, { detached: true, stdio: 'ignore' })
+    const env = { ...process.env }
+    delete env.ELECTRON_RENDERER_URL
+    const child = spawn(exePath, args, { detached: true, stdio: 'ignore', env })
     child.unref()
     return { ok: true, message: `已启动: ${path.basename(exePath)}`, pid: child.pid }
   } catch (err) {

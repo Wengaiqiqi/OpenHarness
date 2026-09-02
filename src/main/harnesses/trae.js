@@ -5,6 +5,7 @@ const trae = {
   name: 'Trae',
   desc: '字节跳动 AI IDE（国内/国际版），支持 MCP',
   color: '#eb4d4b',
+  icon: 'https://cdn.simpleicons.org/trae/eb4d4b',
   processHints: ['Trae CN', 'Trae'],
   exeCandidates: [`${LOCALAPPDATA}\\Programs\\Trae CN\\Trae CN.exe`, `${LOCALAPPDATA}\\Programs\\Trae\\Trae.exe`],
   configCandidates: [`${USERPROFILE}\\.trae\\mcp.json`, `${USERPROFILE}\\.trae-cn\\mcp.json`],

@@ -6,6 +6,7 @@ const cherry = {
   name: 'CherryStudio',
   desc: 'LLM 聚合客户端（本项目的对标参考），仅检测/启动',
   color: '#e8a33d',
+  icon: '/icons/cherrystudio.png',
   processHints: ['Cherry Studio', 'CherryStudio'],
   exeCandidates: [`${LOCALAPPDATA}\\Programs\\CherryStudio\\Cherry Studio.exe`, `${LOCALAPPDATA}\\Programs\\cherry-studio\\Cherry Studio.exe`],
   configCandidates: [`${APPDATA}\\CherryStudio`],
