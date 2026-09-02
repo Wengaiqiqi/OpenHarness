@@ -1,6 +1,6 @@
 # OpenHarness
 
-桌面级 Agent Harness 统一集成服务 —— 参考 CherryStudio 的产品设计，把散落在本机的各类桌面 AI Agent（Harness）聚合到一个入口统一管理。
+桌面级 Agent Harness 统一集成服务,把散落在本机的各类桌面 AI Agent（Harness）聚合到一个入口统一管理。
 
 ## 功能
 
