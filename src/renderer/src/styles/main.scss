@@ -1,0 +1,285 @@
+/* ============================================================
+   OpenHarness design tokens & global surface
+   ============================================================ */
+
+:root {
+  /* brand: deep pine green on cool zinc (single accent, no gradients) */
+  --oh-primary: #2d6a4f;
+  --oh-primary-2: #468a6b;
+  --oh-primary-deep: #1f4a38;
+  --oh-primary-soft: rgba(45, 106, 79, 0.08);
+  --oh-ring: rgba(45, 106, 79, 0.3);
+
+  /* surfaces: zinc neutrals, single flat plane */
+  --oh-bg: #ffffff;
+  --oh-bg-rail: #ffffff;
+  --oh-bg-panel: #ffffff;
+  --oh-bg-card: #ffffff;
+  --oh-bg-input: #f4f4f5;
+  --oh-border: #e4e4e7;
+  --oh-border-strong: #d4d4d8;
+  --oh-hover: rgba(24, 24, 27, 0.05);
+  --oh-active: rgba(45, 106, 79, 0.09);
+
+  /* text */
+  --oh-text: #18181b;
+  --oh-text-2: #3f3f46;
+  --oh-text-dim: #71717a;
+
+  /* status */
+  --oh-success: #16a34a;
+  --oh-danger: #dc2626;
+
+  /* shape & depth: flat — hairlines only, no elevation layers */
+  --oh-radius-sm: 8px;
+  --oh-radius: 10px;
+  --oh-radius-lg: 14px;
+  --oh-shadow-1: none;
+  --oh-shadow-2: none;
+
+  /* motion */
+  --oh-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --oh-dur: 0.25s;
+
+  /* Element Plus alignment */
+  --el-color-primary: var(--oh-primary);
+  --el-color-primary-light-3: #55886f;
+  --el-color-primary-light-5: #7da693;
+  --el-color-primary-light-7: #a6c4b7;
+  --el-color-primary-light-8: #bcd4c9;
+  --el-color-primary-light-9: #dce9e2;
+  --el-color-primary-dark-2: var(--oh-primary-deep);
+  --el-border-radius-base: 8px;
+  --el-font-family: inherit;
+  --el-text-color-primary: var(--oh-text);
+  --el-text-color-regular: var(--oh-text-2);
+  --el-text-color-secondary: var(--oh-text-dim);
+  --el-border-color: var(--oh-border);
+  --el-border-color-light: var(--oh-border);
+  --el-border-color-lighter: var(--oh-border);
+  --el-fill-color-light: var(--oh-bg-input);
+  --el-fill-color-lighter: var(--oh-bg-input);
+  --el-dialog-border-radius: var(--oh-radius-lg);
+}
+
+html.dark {
+  --oh-primary: #38805c;
+  --oh-primary-2: #468a6b;
+  --oh-primary-deep: #2d6a4f;
+  --oh-primary-soft: rgba(72, 150, 111, 0.16);
+  --oh-ring: rgba(72, 150, 111, 0.4);
+
+  --oh-bg: #131316;
+  --oh-bg-rail: #131316;
+  --oh-bg-panel: #131316;
+  --oh-bg-card: #131316;
+  --oh-bg-input: #232326;
+  --oh-border: #2e2e33;
+  --oh-border-strong: #3f3f46;
+  --oh-hover: rgba(255, 255, 255, 0.06);
+  --oh-active: rgba(72, 150, 111, 0.16);
+
+  --oh-text: #f4f4f5;
+  --oh-text-2: #d4d4d8;
+  --oh-text-dim: #a1a1aa;
+
+  --oh-shadow-1: none;
+  --oh-shadow-2: none;
+
+  --el-color-primary: var(--oh-primary);
+  --el-color-primary-light-3: #27523e;
+  --el-color-primary-light-5: #1f4032;
+  --el-color-primary-light-7: #183026;
+  --el-color-primary-light-8: #142620;
+  --el-color-primary-light-9: #101d17;
+  --el-color-primary-dark-2: var(--oh-primary-2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    'PingFang SC',
+    'Microsoft YaHei',
+    -apple-system,
+    'Segoe UI',
+    system-ui,
+    sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+  background: var(--oh-bg);
+  color: var(--oh-text);
+  overflow: hidden;
+}
+
+/* ---- browser surfaces the design must own ---- */
+
+::selection {
+  background: var(--oh-ring);
+  color: var(--oh-text);
+}
+
+input,
+textarea {
+  caret-color: var(--oh-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--oh-primary);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--oh-border-strong);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+
+  &:hover {
+    background-color: var(--oh-text-dim);
+  }
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---- shared primitives ---- */
+
+.page {
+  height: 100%;
+  overflow-y: auto;
+  padding: 46px 32px 28px;
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 6px;
+}
+
+.page-sub {
+  font-size: 13px;
+  color: var(--oh-text-dim);
+  margin: 0 0 24px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.card {
+  background: var(--oh-bg-card);
+  border: 1px solid var(--oh-border);
+  border-radius: var(--oh-radius-lg);
+  padding: 20px;
+  box-shadow: var(--oh-shadow-1);
+  transition:
+    box-shadow var(--oh-dur) var(--oh-ease),
+    border-color var(--oh-dur) var(--oh-ease),
+    transform var(--oh-dur) var(--oh-ease);
+}
+
+.card-hover {
+  &:hover {
+    border-color: var(--oh-border-strong);
+  }
+}
+
+/* ---- frameless title bar: drag strip merged into the app background ---- */
+
+.drag-strip {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 36px;
+  -webkit-app-region: drag;
+  z-index: 1500;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ---- empty states ---- */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 72px 24px;
+}
+
+.empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  background: var(--oh-primary-soft);
+  color: var(--oh-primary);
+  margin-bottom: 18px;
+}
+
+.empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.empty-desc {
+  font-size: 13px;
+  color: var(--oh-text-dim);
+  line-height: 1.6;
+  max-width: 380px;
+  margin-bottom: 20px;
+}
+
+/* ---- route entrance ---- */
+
+.page,
+.chat-shell,
+.workspace {
+  animation: page-in 0.32s var(--oh-ease);
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page,
+  .chat-shell,
+  .workspace {
+    animation: none;
+  }
+}
