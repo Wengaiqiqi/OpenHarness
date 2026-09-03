@@ -4,3 +4,5 @@ dist/
 logs/
 *.log
 .openharness.bak
+
+.claude/
