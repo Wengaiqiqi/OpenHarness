@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import net from 'node:net'
 import bridge from './win32-bridge'
-import { launchExe, launchCliConsole, launchCliConsoleHidden } from '../harnesses/base'
+import { launchExe, launchCliConsole } from '../harnesses/base'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -19,11 +19,9 @@ const attached = new Map()
 let activeId = null
 
 // 最新打开请求：慢冷启动完成时只有仍是最新目标才能激活/显示，过期结果仅登记保持隐藏
-let latestOpenSequence = 0
 let latestOpenId = null
 
-export function setLatest(sequence, id) {
-  latestOpenSequence = sequence
+export function setLatest(id) {
   latestOpenId = id
 }
 
@@ -201,7 +199,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       cli = cli.replace('{port}', String(port))
       // Web 型 harness：隐藏启动服务（CREATE_NO_WINDOW，全程无 cmd/conhost 弹窗），UI 用 iframe 加载
       coldStart = true
-      launchCliConsoleHidden(title, cli)
+      launchCliConsole(title, cli, { hidden: true })
       const ok = await waitForPort(port, 60000)
       if (!ok) {
         await bridge.send('killport', String(port))

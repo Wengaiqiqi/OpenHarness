@@ -81,10 +81,11 @@ function launchExe(exePath, args = []) {
 
 
 /**
- * 在独立控制台窗口中启动 CLI 命令（窗口标题固定为 title）。
- * 写临时 .bat：先 title 再跑命令，绕开 start 的引号规则。
+ * 启动 CLI 命令。写临时 .bat 后以 cmd /c 执行。
+ * @param {boolean} [opts.hidden] 隐藏启动（CREATE_NO_WINDOW，全程无控制台窗口，适合只跑服务的 Web 型 harness）；
+ *   否则用 conhost 显式宿主（绕开 wt 接管、附着后色彩丢失），返回 hostPid 供定位 cmd 子窗口
  */
-function launchCliConsole(title, command) {
+function launchCliConsole(title, command, opts = {}) {
   try {
     const env = { ...process.env }
     delete env.ELECTRON_RENDERER_URL
@@ -92,14 +93,15 @@ function launchCliConsole(title, command) {
     env.COLORTERM = 'truecolor'
     env.TERM = 'xterm-256color'
     const bat = path.join(env.TEMP || process.cwd(), title + '.bat')
-    fs.writeFileSync(bat, [
-      '@echo off',
-      'chcp 65001 >nul',
-      'title ' + title,
-      command,
-      ''
-    ].join(String.fromCharCode(13, 10)))
-    // conhost 显式宿主：绕开 wt 接管（附着后色彩丢失）；返回 conhost PID 供定位 cmd 子窗口
+    const lines = ['@echo off', 'chcp 65001 >nul']
+    if (!opts.hidden) lines.push('title ' + title)
+    lines.push(command, '')
+    fs.writeFileSync(bat, lines.join(String.fromCharCode(13, 10)))
+    if (opts.hidden) {
+      const child = spawn('cmd.exe', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, env })
+      child.unref()
+      return { ok: true }
+    }
     const child = spawn('conhost.exe', ['cmd', '/c', bat], { detached: true, stdio: 'ignore', env })
     child.unref()
     return { ok: true, hostPid: child.pid }
@@ -126,37 +128,6 @@ async function commandExists(command) {
   }
 }
 
-/**
- * 隐藏方式在后台启动 CLI 命令（无控制台窗口，适合只跑服务、用 iframe 加载的 Web 型 harness）。
- * 写临时 .bat 后以 cmd /c 隐藏执行；CREATE_NO_WINDOW 使全程无 cmd/conhost 弹窗。
- */
-function launchCliConsoleHidden(title, command) {
-  try {
-    const env = { ...process.env }
-    delete env.ELECTRON_RENDERER_URL
-    env.FORCE_COLOR = '1'
-    env.COLORTERM = 'truecolor'
-    env.TERM = 'xterm-256color'
-    const bat = path.join(env.TEMP || process.cwd(), title + '.bat')
-    fs.writeFileSync(bat, [
-      '@echo off',
-      'chcp 65001 >nul',
-      command,
-      ''
-    ].join(String.fromCharCode(13, 10)))
-    const child = spawn('cmd.exe', ['/c', bat], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      env
-    })
-    child.unref()
-    return { ok: true }
-  } catch {
-    return { ok: false }
-  }
-}
-
 export {
   APPDATA,
   LOCALAPPDATA,
@@ -168,7 +139,6 @@ export {
   buildStdioEntry,
   launchExe,
   launchCliConsole,
-  launchCliConsoleHidden,
   commandExists,
   firstExists
 }

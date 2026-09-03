@@ -28,7 +28,6 @@ const store = new Store({
 })
 
 let mainWindow = null
-let openSequence = 0
 const inflightOpens = new Map()
 pty.initPty((channel, payload) => mainWindow?.webContents.send(channel, payload))
 const chat = createChatService()
@@ -287,10 +286,9 @@ function applyClip() {
 }
 
 ipcMain.handle('embed:open', async (_e, id, cssRect) => {
-  const sequence = ++openSequence
   const previous = inflightOpens.get(id)
   if (previous) return previous
-  const operation = openHarness(id, cssRect, sequence)
+  const operation = openHarness(id, cssRect)
   inflightOpens.set(id, operation)
   operation.then(
     () => { if (inflightOpens.get(id) === operation) inflightOpens.delete(id) },
@@ -299,7 +297,7 @@ ipcMain.handle('embed:open', async (_e, id, cssRect) => {
   return operation
 })
 
-async function openHarness(id, cssRect, sequence) {
+async function openHarness(id, cssRect) {
   const adapter = harnessRegistry.get(id)
   if (!adapter) return { ok: false, message: `未找到 harness: ${id}` }
   if (!mainWindow) return { ok: false, message: '主窗口未就绪' }
@@ -311,13 +309,13 @@ async function openHarness(id, cssRect, sequence) {
 
   try {
     if (adapter.usePty) {
-      pty.setLatest(sequence, id)
+      pty.setLatest(id)
       // 同步顶掉 embed 的最新目标，避免更早的原生慢冷启动误判为新目标而抢前台
-      embed.setLatest(sequence, id)
+      embed.setLatest(id)
       return pty.open(id, adapter.cli)
     }
     pty.deactivate()
-    embed.setLatest(sequence, id)
+    embed.setLatest(id)
     const res = await embed.embedApp({
       harnessId: id,
       exePath: detectInfo.exePath,

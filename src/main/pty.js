@@ -20,7 +20,7 @@ let latestId = null
 export function initPty(onEvent) { send = onEvent }
 
 // 最新打开请求：只有仍是最新目标的 PTY 才能成为当前活动，过期请求不抢前台
-export function setLatest(_sequence, id) {
+export function setLatest(id) {
   latestId = id
 }
 
