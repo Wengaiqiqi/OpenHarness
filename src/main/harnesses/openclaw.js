@@ -1,4 +1,5 @@
 import { USERPROFILE, APPDATA, exists, firstExists, launchExe } from './base'
+import { mergeJsonAgentProviders } from './agent-config'
 
 /** OpenClaw（原 Clawdbot/Moltbot）：个人 AI 助理网关，检测常见安装位置 */
 const openclaw = {
@@ -6,7 +7,8 @@ const openclaw = {
   name: 'OpenClaw',
   desc: '个人 AI 助理 Gateway，实验性检测',
   color: '#a78bfa',
-  icon: '/icons/openclaw.svg',
+  icon: 'icons/openclaw.svg',
+  cli: 'openclaw',
   processHints: ['openclaw'],
   exeCandidates: [`${USERPROFILE}\\.openclaw\\bin\\openclaw.cmd`, `${APPDATA}\\npm\\openclaw.cmd`],
   configCandidates: [`${USERPROFILE}\\.openclaw\\openclaw.json`, `${USERPROFILE}\\.openclaw\\clawdbot.json`],
@@ -31,6 +33,10 @@ const openclaw = {
   },
   async injectMcp() {
     return { ok: false, message: 'OpenClaw 暂不支持直接注入，请在 Gateway 配置中手动添加' }
+  },
+  async configureModel({ models }) {
+    const p = this.configPath() || this.configCandidates[0]
+    return mergeJsonAgentProviders(p, { models })
   }
 }
 

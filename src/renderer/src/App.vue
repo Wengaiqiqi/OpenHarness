@@ -32,7 +32,7 @@ onMounted(() => store.init())
   <div class="app-shell">
     <aside class="icon-rail">
       <div class="logo">
-        <img :src="store.theme === 'dark' ? '/logo-dark.png' : '/logo.png'" class="logo-mark" alt="OpenHarness" />
+        <img :src="store.theme === 'dark' ? 'logo-dark.png' : 'logo.png'" class="logo-mark" alt="OpenHarness" />
       </div>
       <nav class="rail-nav">
         <div
@@ -85,6 +85,7 @@ onMounted(() => store.init())
 .logo-mark {
   width: 40px;
   height: 40px;
+  border-radius: 12px;
   object-fit: contain;
 }
 

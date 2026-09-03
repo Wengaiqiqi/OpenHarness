@@ -80,7 +80,7 @@ function openWorkspace(h) {
           @click="openWorkspace(h)"
         >
           <div class="status-icon" :class="{ off: !h.installed }">
-            <img v-if="h.icon" :src="h.icon" :class="{ 'icon-invert': h.id === 'opencode' && store.theme === 'dark' }" alt="" />
+            <img v-if="h.icon" :src="h.icon" :class="{ 'icon-invert': store.theme === 'dark' && /simpleicons|jsdelivr/.test(h.icon || '') }" alt="" />
             <span v-else class="status-dot" :class="h.installed ? 'on' : 'off'" />
           </div>
           <div class="status-name" :title="h.name">{{ h.name }}</div>

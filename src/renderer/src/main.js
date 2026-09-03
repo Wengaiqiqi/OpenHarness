@@ -33,4 +33,19 @@ for (const [name, comp] of Object.entries(Icons)) {
   app.component(name, comp)
 }
 
-app.mount('#app')
+// preload 竞态兜底：dev 热更时 renderer 可能先于 preload 就绪，等 window.api 出现再挂载
+function mount() {
+  app.mount('#app')
+}
+if (window.api) {
+  mount()
+} else {
+  let tries = 0
+  const t = setInterval(() => {
+    tries += 1
+    if (window.api || tries > 50) {
+      clearInterval(t)
+      mount()
+    }
+  }, 100)
+}

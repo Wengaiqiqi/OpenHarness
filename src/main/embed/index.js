@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import net from 'node:net'
 import bridge from './win32-bridge'
-import { launchExe } from '../harnesses/base'
+import { launchExe, launchCliConsole, launchCliConsoleHidden } from '../harnesses/base'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const exec = promisify(execFile)
 
@@ -14,6 +17,23 @@ const SW_RESTORE = 9
 // 多开：harnessId -> { hwnd, origStyle }；activeId 为当前显示的那个
 const attached = new Map()
 let activeId = null
+
+// 最新打开请求：慢冷启动完成时只有仍是最新目标才能激活/显示，过期结果仅登记保持隐藏
+let latestOpenSequence = 0
+let latestOpenId = null
+
+export function setLatest(sequence, id) {
+  latestOpenSequence = sequence
+  latestOpenId = id
+}
+
+function isLatest(harnessId) {
+  return latestOpenId === harnessId
+}
+
+function clearLatestIf(id) {
+  if (latestOpenId === id) latestOpenId = null
+}
 
 function runPS(script) {
   return exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
@@ -35,6 +55,32 @@ export async function findWindowByNames(processHints = []) {
   const out = await runPS(script)
   const n = parseInt(out, 10)
   return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** 按窗口标题轮询查找主窗口句柄（CLI 控制台窗口） */
+export async function findWindowByTitle(title, maxWaitMs = 20000) {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    const out = await bridge.send('findbytitle', title)
+    const m = /^hwnd:(\d+)$/.exec(out || '')
+    const n = parseInt(m?.[1], 10)
+    if (Number.isFinite(n) && n > 0) return n
+    await sleep(500)
+  }
+  return 0
+}
+
+/** 按宿主 PID 找其子进程的主窗口句柄（conhost -> cmd 控制台窗口） */
+export async function findChildWindow(hostPid, maxWaitMs = 20000) {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    const out = await bridge.send('findchild', String(hostPid))
+    const m = /^hwnd:(\d+)$/.exec(out || '')
+    const n = parseInt(m?.[1], 10)
+    if (Number.isFinite(n) && n > 0) return n
+    await sleep(500)
+  }
+  return 0
 }
 
 /** 按已启动的 PID 轮询主窗口句柄（应用冷启动需要时间） */
@@ -64,12 +110,69 @@ export async function findWindowByNamesPoll(processHints = [], maxWaitMs = 20000
   return 0
 }
 
+/** 按本地服务监听端口找主窗口句柄（Web 型 CLI：dsh web --port N） */
+export async function findWindowByPort(port, maxWaitMs = 25000) {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    const out = await bridge.send('findbyport', String(port))
+    const m = /^hwnd:(\d+)$/.exec(out || '')
+    const n = parseInt(m?.[1], 10)
+    if (Number.isFinite(n) && n > 0) return n
+    await sleep(500)
+  }
+  return 0
+}
+
+/** 找一个当前空闲的 TCP 端口（listen 0 让 OS 分配，随即释放） */
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer()
+    srv.listen(0, '127.0.0.1', () => {
+      const port = srv.address().port
+      srv.close(() => resolve(port))
+    })
+    srv.on('error', reject)
+  })
+}
+
+/** 轮询 TCP 端口直到可连接（服务就绪） */
+function waitForPort(port, maxWaitMs = 40000) {
+  const deadline = Date.now() + maxWaitMs
+  return new Promise((resolve) => {
+    const tryOnce = () => {
+      const sock = net.connect({ port, host: '127.0.0.1' })
+      sock.once('connect', () => { sock.destroy(); resolve(true) })
+      sock.once('error', () => {
+        sock.destroy()
+        if (Date.now() < deadline) setTimeout(tryOnce, 800)
+        else resolve(false)
+      })
+    }
+    tryOnce()
+  })
+}
+
+// Web 型 harness 的运行中服务：harnessId -> { port }，关闭标签时杀进程树用
+const webServices = new Map()
+
+function activateWeb(harnessId) {
+  for (const [, a] of attached) bridge.fire('show', a.hwnd, SW_HIDE)
+  setClipRect(null)
+  activeId = harnessId
+}
+
 /**
  * 将目标应用主窗口附着（嵌入）到 OpenHarness 窗口内；已附着则直接激活
  * @param {number} parentHwnd OpenHarness BrowserWindow 的 HWND
  * @param {{x:number,y:number,width:number,height:number}} [initialRect] 容器物理像素矩形，附着后立即定位
  */
-export async function embedApp({ harnessId, exePath, processHints, parentHwnd, initialRect }) {
+export async function embedApp({ harnessId, exePath, processHints, parentHwnd, initialRect, cli, webPort }) {
+  // Web 型服务已在运行：直接返回其 URL，不再起新实例
+  if (webServices.has(harnessId)) {
+    const { port } = webServices.get(harnessId)
+    if (isLatest(harnessId)) activateWeb(harnessId)
+    return { ok: true, webUrl: 'http://127.0.0.1:' + port, serviceOnly: true, reactivated: true }
+  }
   // 已附着：贴合新容器矩形后直接激活
   if (attached.has(harnessId)) {
     const a = attached.get(harnessId)
@@ -84,22 +187,53 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
     return { ok: true, hwnd: a.hwnd, reactivated: true }
   }
 
-  // 先找已运行的实例，找不到再冷启动
-  let hwnd = await findWindowByNames(processHints)
   let pid = null
   let coldStart = false
-  if (!hwnd && exePath) {
-    const r = launchExe(exePath)
-    if (!r.ok) return r
-    pid = r.pid
+
+  // CLI 型 harness：起一个带标题的控制台窗口跑 CLI（wt 优先 + cmd start 兜底），按标题找到窗口附着
+  let hwnd = 0
+  if (cli) {
+    const title = `OH-CLI-${harnessId}`
+    let port = 0
+    if (webPort) {
+      // Web 型 CLI：动态分配空闲端口，替换命令里的 {port} —— 无需 killport，天然不冲突
+      port = await getFreePort()
+      cli = cli.replace('{port}', String(port))
+      // Web 型 harness：隐藏启动服务（CREATE_NO_WINDOW，全程无 cmd/conhost 弹窗），UI 用 iframe 加载
+      coldStart = true
+      launchCliConsoleHidden(title, cli)
+      const ok = await waitForPort(port, 60000)
+      if (!ok) {
+        await bridge.send('killport', String(port))
+        return { ok: false, message: `服务未能在预期时间内启动（${cli}）` }
+      }
+      webServices.set(harnessId, { port })
+      if (isLatest(harnessId)) activateWeb(harnessId)
+      return { ok: true, webUrl: `http://127.0.0.1:${port}`, serviceOnly: true }
+    }
+    const launched = launchCliConsole(title, cli)
     coldStart = true
-    // Electron 启动器（如 Code.exe）会退出并把窗口交给真正的子进程，
-    // 所以 pid 轮询失败时退回按进程名轮询
-    hwnd = await findWindowByPid(pid, 10000)
-    if (!hwnd) hwnd = await findWindowByNamesPoll(processHints, 15000)
-  }
-  if (!hwnd) {
-    return { ok: false, message: '未能找到应用窗口（应用可能启动失败或窗口尚未创建）' }
+    // 按 conhost 子进程 cmd 定位控制台窗口（标题会被 claude 等程序改掉，PID 链不受影响）
+    hwnd = await findChildWindow(launched.hostPid, 20000)
+    if (!hwnd) {
+      return { ok: false, message: `未能找到 ${cli} 的控制台窗口（命令可能未安装，可在终端直接运行 ${cli} 验证）` }
+    }
+  } else {
+    // 先找已运行的实例，找不到再冷启动
+    hwnd = await findWindowByNames(processHints)
+    if (!hwnd && exePath) {
+      const r = launchExe(exePath)
+      if (!r.ok) return r
+      pid = r.pid
+      coldStart = true
+      // Electron 启动器（如 Code.exe）会退出并把窗口交给真正的子进程，
+      // 所以 pid 轮询失败时退回按进程名轮询
+      hwnd = await findWindowByPid(pid, 10000)
+      if (!hwnd) hwnd = await findWindowByNamesPoll(processHints, 15000)
+    }
+    if (!hwnd) {
+      return { ok: false, message: '未能找到应用窗口（应用可能启动失败或窗口尚未创建）' }
+    }
   }
 
   if (coldStart) {
@@ -129,10 +263,15 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
   }
 
   attached.set(harnessId, { hwnd, origStyle, parentHwnd })
-  activate(harnessId, initialRect)
-  if (coldStart) {
-    // 冷启动窗口是隐藏着被附着的：定位完成后 RESTORE（清最小化态）再由 activate 的 SW_SHOW 显示
-    bridge.fire('show', hwnd, SW_RESTORE)
+  // 只有仍是最新打开目标时才激活/显示；过期冷启动登记后保持隐藏，切回时即时复用
+  if (isLatest(harnessId)) {
+    activate(harnessId, initialRect)
+    if (coldStart) {
+      // 冷启动窗口是隐藏着被附着的：定位完成后 RESTORE（清最小化态）再由 activate 的 SW_SHOW 显示
+      bridge.fire('show', hwnd, SW_RESTORE)
+    }
+  } else {
+    bridge.fire('show', hwnd, SW_HIDE)
   }
   return { ok: true, hwnd, pid, launched: !!pid }
 }
@@ -262,6 +401,12 @@ async function clipTick() {
 /** 释放指定（默认当前激活的）嵌入：恢复原样式并脱离父窗口，应用本身继续运行 */
 export async function release(harnessId) {
   const id = harnessId || activeId
+  clearLatestIf(id)
+  // Web 型 harness 没有附着窗口：服务继续跑，仅从激活态移除
+  if (webServices.has(id)) {
+    if (activeId === id) activeId = null
+    return
+  }
   const a = attached.get(id)
   if (!a) return
   bridge.fire('clearrgn', a.hwnd)
@@ -278,6 +423,14 @@ export async function release(harnessId) {
 /** 关闭指定（默认当前激活的）嵌入：先脱离再杀掉应用进程树 */
 export async function closeAndKill(harnessId) {
   const id = harnessId || activeId
+  // Web 型 harness：杀服务进程树（按端口反查 PID）
+  if (webServices.has(id)) {
+    const { port } = webServices.get(id)
+    await bridge.send('killport', String(port))
+    webServices.delete(id)
+    if (activeId === id) activeId = null
+    return
+  }
   const a = attached.get(id)
   if (!a) return
   // PID 必须在脱离前查：脱离后 hwnd 仍有效但窗口已变独立窗口
@@ -293,6 +446,11 @@ export async function closeAndKill(harnessId) {
 /** 释放全部嵌入（应用退出时调用，避免外部应用残留无边框样式） */
 export async function releaseAll() {
   setClipRect(null)
+  // Web 型服务：应用退出时一并结束
+  for (const [, s] of webServices) {
+    await bridge.send('killport', String(s.port))
+  }
+  webServices.clear()
   for (const id of [...attached.keys()]) {
     await release(id)
   }
@@ -310,7 +468,7 @@ export function showActive() {
 }
 
 export function status() {
-  return { attached: [...attached.keys()], activeId }
+  return { attached: [...attached.keys(), ...webServices.keys()], activeId }
 }
 
 function parseValue(line = '') {

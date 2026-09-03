@@ -1,6 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, execFile as rawExecFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFile = promisify(rawExecFile)
 
 const APPDATA = process.env.APPDATA || path.join(process.env.USERPROFILE, 'AppData', 'Roaming')
 const LOCALAPPDATA = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE, 'AppData', 'Local')
@@ -76,10 +79,82 @@ function launchExe(exePath, args = []) {
   }
 }
 
+
+/**
+ * 在独立控制台窗口中启动 CLI 命令（窗口标题固定为 title）。
+ * 写临时 .bat：先 title 再跑命令，绕开 start 的引号规则。
+ */
+function launchCliConsole(title, command) {
+  try {
+    const env = { ...process.env }
+    delete env.ELECTRON_RENDERER_URL
+    env.FORCE_COLOR = '1'
+    env.COLORTERM = 'truecolor'
+    env.TERM = 'xterm-256color'
+    const bat = path.join(env.TEMP || process.cwd(), title + '.bat')
+    fs.writeFileSync(bat, [
+      '@echo off',
+      'chcp 65001 >nul',
+      'title ' + title,
+      command,
+      ''
+    ].join(String.fromCharCode(13, 10)))
+    // conhost 显式宿主：绕开 wt 接管（附着后色彩丢失）；返回 conhost PID 供定位 cmd 子窗口
+    const child = spawn('conhost.exe', ['cmd', '/c', bat], { detached: true, stdio: 'ignore', env })
+    child.unref()
+    return { ok: true, hostPid: child.pid }
+  } catch {
+    return { ok: false }
+  }
+}
+
 /** 在候选路径中找到第一个存在的 */
 function firstExists(paths) {
   for (const p of paths) if (exists(p)) return p
   return null
+}
+
+/** 探测命令是否在 PATH 中（取命令首词，兼容带参数/占位符的 cli 字段） */
+async function commandExists(command) {
+  const name = String(command || '').trim().split(/\s+/)[0]
+  if (!name) return false
+  try {
+    const { stdout } = await execFile('where', [name], { windowsHide: true, timeout: 4000 })
+    return !!stdout.trim()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 隐藏方式在后台启动 CLI 命令（无控制台窗口，适合只跑服务、用 iframe 加载的 Web 型 harness）。
+ * 写临时 .bat 后以 cmd /c 隐藏执行；CREATE_NO_WINDOW 使全程无 cmd/conhost 弹窗。
+ */
+function launchCliConsoleHidden(title, command) {
+  try {
+    const env = { ...process.env }
+    delete env.ELECTRON_RENDERER_URL
+    env.FORCE_COLOR = '1'
+    env.COLORTERM = 'truecolor'
+    env.TERM = 'xterm-256color'
+    const bat = path.join(env.TEMP || process.cwd(), title + '.bat')
+    fs.writeFileSync(bat, [
+      '@echo off',
+      'chcp 65001 >nul',
+      command,
+      ''
+    ].join(String.fromCharCode(13, 10)))
+    const child = spawn('cmd.exe', ['/c', bat], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env
+    })
+    child.unref()
+    return { ok: true }
+  } catch {
+    return { ok: false }
+  }
 }
 
 export {
@@ -92,5 +167,8 @@ export {
   injectMcpIntoFile,
   buildStdioEntry,
   launchExe,
+  launchCliConsole,
+  launchCliConsoleHidden,
+  commandExists,
   firstExists
 }

@@ -1,4 +1,5 @@
 import { USERPROFILE, exists, firstExists, launchExe } from './base'
+import { mergeYamlAgentProviders } from './agent-config'
 
 /** Hermes（Nous Research hermes-agent）：个人 AI Agent，检测 CLI 与配置目录 */
 const hermes = {
@@ -9,12 +10,12 @@ const hermes = {
   processHints: ['hermes'],
   exeCandidates: [`${USERPROFILE}\\.hermes\\bin\\hermes.exe`, `${USERPROFILE}\\AppData\\Roaming\\npm\\hermes.cmd`],
   configCandidates: [`${USERPROFILE}\\.hermes\\config.json`, `${USERPROFILE}\\.hermes\\hermes.json`],
-  icon: '/icons/hermes.png',
+  icon: 'icons/hermes.png',
 
   async detect() {
     const exe = firstExists(this.exeCandidates)
     const configPath = firstExists(this.configCandidates)
-    return { installed: !!(exe || configPath || exists(`${USERPROFILE}\\.hermes`)), exePath: exe, configPath, canInjectMcp: false }
+    return { installed: !!(exe || configPath || exists(`${USERPROFILE}\\.hermes`)), exePath: exe, configPath, canInjectMcp: false, canConfigureModel: true }
   },
   configPath() {
     return firstExists(this.configCandidates)
@@ -26,6 +27,10 @@ const hermes = {
   },
   async injectMcp() {
     return { ok: false, message: 'Hermes 配置格式暂不支持直接注入' }
+  },
+  async configureModel({ models }) {
+    const p = this.configPath() || this.configCandidates[0]
+    return mergeYamlAgentProviders(p, { models }, ['providers'])
   }
 }
 

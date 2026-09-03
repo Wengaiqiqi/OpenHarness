@@ -4,6 +4,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { SwitchButton, Position, Close, Monitor, Plus, Refresh } from '@element-plus/icons-vue'
+import TerminalView from '@/components/TerminalView.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,6 +19,7 @@ const addVisible = ref(false)
 
 let resizeObserver = null
 let throttleTimer = null
+let activationSeq = 0
 
 const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value) || null)
 // 尚未打开且已安装的 harness，供"+"下拉选择
@@ -46,26 +48,32 @@ function scheduleSync() {
 }
 
 /** 激活标签：已附着 → 直接切换显示；未附着 → 附着（冷启动可能较慢） */
-async function activateTab(t) {
+function activateTab(t) {
+  const seq = ++activationSeq
   activeTabId.value = t.id
   loading.value = true
-  try {
-    const res = await api.embedOpen(t.id, hostRect())
-    if (!res.ok) {
-      embedOk.value = false
-      ElMessage.error(res.message || '附着失败')
-      return
+  const run = async () => {
+    try {
+      const res = await api.embedOpen(t.id, hostRect())
+      if (seq !== activationSeq) return
+      if (!res.ok) {
+        embedOk.value = false
+        ElMessage.error(res.message || '附着失败')
+        return
+      }
+      embedOk.value = true
+      t.webUrl = res.webUrl || null
+      t.mode = res.mode || (t.webUrl ? 'web' : 'native')
+      if (t.webUrl || t.mode === 'pty') return
+      await syncSize()
+      setTimeout(() => {
+        if (seq === activationSeq && embedOk.value && hostEl.value) syncSize()
+      }, 400)
+    } finally {
+      if (seq === activationSeq) loading.value = false
     }
-    embedOk.value = true
-    await syncSize()
-    // page-in 入场动画（0.32s）会让 getBoundingClientRect 短暂偏移，
-    // 动画结束后再校准一次，确保嵌入窗口默认贴满规划容器
-    setTimeout(() => {
-      if (embedOk.value && hostEl.value) syncSize()
-    }, 400)
-  } finally {
-    loading.value = false
   }
+  return run()
 }
 
 /** 关闭标签 = 释放该嵌入，应用本身转为独立窗口继续运行 */
@@ -103,7 +111,15 @@ async function rescan() {
 async function toStandalone() {
   const t = activeTab.value
   if (!t) return
-  await closeTab(t)
+  await api.embedRelease(t.id)
+  const idx = tabs.value.findIndex((x) => x.id === t.id)
+  if (idx >= 0) tabs.value.splice(idx, 1)
+  if (activeTabId.value === t.id) {
+    activeTabId.value = null
+    embedOk.value = false
+    const next = tabs.value[idx] || tabs.value[idx - 1]
+    if (next) await activateTab(next)
+  }
   ElMessage.success(`「${t.name}」已转为独立窗口运行`)
 }
 
@@ -116,7 +132,8 @@ onMounted(async () => {
   resizeObserver = new ResizeObserver(scheduleSync)
   if (hostEl.value) resizeObserver.observe(hostEl.value)
 
-  loading.value = true
+  // 不在这里无条件置 loading：无标签时应立即显示空态，而非误导的"正在附着"。
+  // 真正附着发生在 activateTab（其内部才设置 loading）。
   try {
     const list = (await api.harnessList()) || []
     harnessList.value = list
@@ -176,7 +193,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <div class="ws-actions">
-        <el-button size="small" :icon="Position" :disabled="!activeTab" @click="toStandalone">转为独立窗口</el-button>
+        <el-button size="small" :icon="Position" :disabled="!activeTab || activeTab.mode === 'pty'" @click="toStandalone">转为独立窗口</el-button>
         <el-button size="small" type="danger" plain :icon="SwitchButton" :disabled="!tabs.length" @click="releaseAndBack">释放并返回</el-button>
       </div>
     </header>
@@ -207,6 +224,15 @@ onBeforeUnmount(() => {
     </div>
 
     <div ref="hostEl" class="ws-host">
+      <TerminalView
+        v-for="t in tabs.filter((tab) => tab.mode === 'pty')"
+        :key="t.id"
+        :id="t.id"
+        :visible="t.id === activeTabId"
+        :class="{ 'ws-terminal-hidden': t.id !== activeTabId }"
+        class="ws-terminal"
+      />
+      <iframe v-if="activeTab && activeTab.webUrl" :src="activeTab.webUrl" class="ws-web" frameborder="0" />
       <div v-if="loading" class="ws-tip">
         <el-icon class="is-loading" :size="28"><Loading /></el-icon>
         <p>正在附着应用窗口…（冷启动可能需要十几秒）</p>
@@ -408,6 +434,26 @@ onBeforeUnmount(() => {
   position: relative;
   overflow: hidden;
   background: var(--oh-bg);
+}
+
+.ws-terminal {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.ws-terminal-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ws-web {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
 }
 
 .ws-tip {

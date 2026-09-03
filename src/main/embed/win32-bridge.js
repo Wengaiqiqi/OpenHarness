@@ -51,6 +51,10 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
       'show'      { [OHWin]::ShowWindow([IntPtr][long]$p[1], [int]$p[2]) | Out-Null }
       'getrect'   { $r = New-Object OHWin+RECT; [OHWin]::GetWindowRect([IntPtr][long]$p[1], [ref]$r) | Out-Null; Write-Output ('rect:' + $r.Left + ',' + $r.Top + ',' + $r.Right + ',' + $r.Bottom) }
       'clientorigin' { $pt = New-Object OHWin+POINT; [OHWin]::ClientToScreen([IntPtr][long]$p[1], [ref]$pt) | Out-Null; Write-Output ('origin:' + $pt.X + ',' + $pt.Y) }
+      'findbytitle' { $w = Get-Process | Where-Object { $_.MainWindowTitle -like ('*' + $p[1] + '*') } | Select-Object -First 1; if ($w) { Write-Output ('hwnd:' + $w.MainWindowHandle) } else { Write-Output 'hwnd:0' } }
+      'findchild' { $kids = Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + [int]$p[1]) -ErrorAction SilentlyContinue; foreach ($k in $kids) { $w = Get-Process -Id $k.ProcessId -ErrorAction SilentlyContinue; if ($w -and $w.MainWindowHandle -ne 0) { Write-Output ('hwnd:' + $w.MainWindowHandle) } } }
+      'findbyport' { $w = Get-Process | Where-Object { $_.MainWindowTitle -like ('*--port ' + $p[1] + '*') } | Select-Object -First 1; if ($w -and $w.MainWindowHandle -ne 0) { Write-Output ('hwnd:' + $w.MainWindowHandle) } else { Write-Output 'hwnd:0' } }
+      'killport' { $c = Get-NetTCPConnection -LocalPort ([int]$p[1]) -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { taskkill /T /F /PID $c.OwningProcess | Out-Null }; }
       'setrgn'    { $rgn = [OHWin]::CreateRectRgn([int]$p[2], [int]$p[3], ([int]$p[2] + [int]$p[4]), ([int]$p[3] + [int]$p[5])); [OHWin]::SetWindowRgn([IntPtr][long]$p[1], $rgn, $true) | Out-Null }
       'clearrgn'  { [OHWin]::SetWindowRgn([IntPtr][long]$p[1], [IntPtr]::Zero, $true) | Out-Null }
       'pidof'     { $procId = 0; [OHWin]::GetWindowThreadProcessId([IntPtr][long]$p[1], [ref]$procId) | Out-Null; Write-Output ('pid:' + $procId) }

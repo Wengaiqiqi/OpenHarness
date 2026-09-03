@@ -4,7 +4,9 @@ import fs from 'node:fs'
 import Store from 'electron-store'
 import harnessRegistry from './harnesses'
 import { createChatService } from './chat'
+import { createModelProxy } from './proxy'
 import * as embed from './embed'
+import * as pty from './pty'
 
 Store.initRenderer()
 
@@ -26,6 +28,9 @@ const store = new Store({
 })
 
 let mainWindow = null
+let openSequence = 0
+const inflightOpens = new Map()
+pty.initPty((channel, payload) => mainWindow?.webContents.send(channel, payload))
 const chat = createChatService()
 
 function createWindow() {
@@ -83,6 +88,8 @@ app.whenReady().then(() => {
   mainWindow.on('leave-full-screen', resyncEmbed)
   screen.on('display-metrics-changed', resyncEmbed)
 
+  autoStartProxy()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -93,6 +100,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  pty.closeAll()
   embed.releaseAll().catch(() => {})
 })
 
@@ -279,6 +287,19 @@ function applyClip() {
 }
 
 ipcMain.handle('embed:open', async (_e, id, cssRect) => {
+  const sequence = ++openSequence
+  const previous = inflightOpens.get(id)
+  if (previous) return previous
+  const operation = openHarness(id, cssRect, sequence)
+  inflightOpens.set(id, operation)
+  operation.then(
+    () => { if (inflightOpens.get(id) === operation) inflightOpens.delete(id) },
+    () => { if (inflightOpens.get(id) === operation) inflightOpens.delete(id) }
+  )
+  return operation
+})
+
+async function openHarness(id, cssRect, sequence) {
   const adapter = harnessRegistry.get(id)
   if (!adapter) return { ok: false, message: `未找到 harness: ${id}` }
   if (!mainWindow) return { ok: false, message: '主窗口未就绪' }
@@ -289,19 +310,34 @@ ipcMain.handle('embed:open', async (_e, id, cssRect) => {
   const initialRect = cssRect ? clampRect(cssRect) : undefined
 
   try {
+    if (adapter.usePty) {
+      pty.setLatest(sequence, id)
+      // 同步顶掉 embed 的最新目标，避免更早的原生慢冷启动误判为新目标而抢前台
+      embed.setLatest(sequence, id)
+      return pty.open(id, adapter.cli)
+    }
+    pty.deactivate()
+    embed.setLatest(sequence, id)
     const res = await embed.embedApp({
       harnessId: id,
       exePath: detectInfo.exePath,
       processHints: adapter.processHints || [adapter.name],
       parentHwnd: getParentHwnd(),
-      initialRect
+      initialRect,
+      cli: adapter.cli,
+      webPort: adapter.webPort
     })
     if (res.ok) applyClip()
     return res
   } catch (err) {
     return { ok: false, message: String(err) }
   }
-})
+}
+
+ipcMain.on('pty:input', (_e, id, data) => pty.input(id, data))
+ipcMain.on('pty:resize', (_e, id, cols, rows) => pty.resize(id, cols, rows))
+ipcMain.handle('pty:buffer', (_e, id) => pty.readBuffer(id))
+ipcMain.handle('pty:close', (_e, id) => { pty.close(id); return true })
 
 ipcMain.handle('embed:reposition', (_e, rect) => {
   if (!mainWindow) return false
@@ -313,9 +349,19 @@ ipcMain.handle('embed:reposition', (_e, rect) => {
 
 // 关闭标签 = 释放该嵌入（恢复原样式并脱离，应用本身继续独立运行）
 // 关闭标签 = 关闭嵌入的应用本身（杀进程树），而非释放为独立窗口
-ipcMain.handle('embed:close', (_e, id) => embed.closeAndKill(id))
+ipcMain.handle('embed:close', (_e, id) => {
+  if (id === 'claude-code') { pty.close(id); return true }
+  return embed.closeAndKill(id)
+})
+
+// 转为独立窗口 = 仅脱离（恢复原样式/父子关系），进程继续运行
+ipcMain.handle('embed:release', (_e, id) => {
+  if (id === 'claude-code') return true
+  return embed.release(id)
+})
 
 ipcMain.handle('embed:releaseAll', async () => {
+  pty.closeAll()
   await embed.releaseAll()
   return true
 })
@@ -325,4 +371,63 @@ ipcMain.handle('embed:hide', () => {
   return true
 })
 
-ipcMain.handle('embed:status', () => embed.status())
+ipcMain.handle('embed:status', () => {
+  const status = embed.status()
+  return { ...status, attached: [...status.attached, ...pty.ids()], activeId: pty.status() || status.activeId }
+})
+
+/* ---------------- 内置模型代理 + Harness 模型配置 ---------------- */
+const modelProxy = createModelProxy({ port: 18200, log: (...a) => console.warn('[proxy]', ...a) })
+
+async function ensureProxy(provider, model) {
+  modelProxy.setTarget(provider, model)
+  store.set('proxyTarget', { providerId: provider.id, model })
+  const st = modelProxy.status()
+  if (!st.running) await modelProxy.start().catch((e) => { throw new Error('本地代理启动失败：' + e.message) })
+  return modelProxy.status()
+}
+
+// 开机自动拉起代理：只要配置过模型注入且存在对应 Provider
+async function autoStartProxy() {
+  try {
+    const target = store.get('proxyTarget')
+    if (!target?.providerId) return
+    const provider = (store.get('providers') || []).find((p) => p.id === target.providerId)
+    if (!provider) return
+    modelProxy.setTarget(provider, target.model)
+    if (!modelProxy.status().running) await modelProxy.start()
+    console.warn('[proxy] auto-started for', provider.name, target.model)
+  } catch (e) {
+    console.warn('[proxy] auto-start failed:', String(e))
+  }
+}
+
+ipcMain.handle('proxy:status', () => modelProxy.status())
+
+ipcMain.handle('harness:configureModel', async (_e, id, { selection }) => {
+  const adapter = harnessRegistry.get(id)
+  if (!adapter || !adapter.configureModel) return { ok: false, message: '该 Harness 暂不支持模型配置' }
+  const providers = store.get('providers') || []
+  // selection = [{ providerId, model }]，可跨 Provider 多选
+  const resolved = (selection || [])
+    .map(({ providerId: pid, model: m }) => ({ provider: providers.find((p) => p.id === pid), model: m }))
+    .filter((x) => x.provider && x.model)
+  if (!resolved.length) return { ok: false, message: '请至少选择一个模型' }
+  const bad = resolved.find((x) => ['bedrock', 'openai-responses'].includes(x.provider.type))
+  if (bad) return { ok: false, message: `协议 ${bad.provider.type} 暂不支持代理接入，请使用 OpenAI Compatible / Anthropic / Gemini` }
+
+  try {
+    const primary = resolved[0]
+    await ensureProxy(primary.provider, primary.model)
+    // 注册模型路由：代理按请求的模型名转发到对应 Provider
+    modelProxy.setRoutes(resolved.map((x) => ({ provider: x.provider, model: x.model })))
+    const r = await adapter.configureModel({
+      models: resolved.map((x) => x.model),
+      model: primary.model
+    })
+    if (r.ok) r.proxy = modelProxy.status()
+    return r
+  } catch (err) {
+    return { ok: false, message: String(err) }
+  }
+})

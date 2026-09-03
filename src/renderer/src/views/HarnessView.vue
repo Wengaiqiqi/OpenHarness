@@ -1,20 +1,30 @@
+<script>
+import { ref } from 'vue'
+
+// 跨页面复用首次扫描结果；重启渲染进程后重置。
+const harnessesCache = ref([])
+let autoScanned = false
+</script>
+
 <script setup>
-import { api } from '@/api'
-import { ref, onMounted, computed } from 'vue'
+import { onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
-import { Refresh, VideoPlay, FolderOpened, Link } from '@element-plus/icons-vue'
+import { Refresh, VideoPlay, Link, MagicStick } from '@element-plus/icons-vue'
+import { api } from '@/api'
 
 const router = useRouter()
 const appStore = useAppStore()
-const harnesses = ref([])
+// 复用模块级缓存（首次扫描结果跨页面保留），避免每次进入重扫
+const harnesses = harnessesCache
 const loading = ref(false)
 const injectVisible = ref(false)
 const injectTarget = ref(null)
 const mcpServers = ref([])
 const selectedMcp = ref([])
 
+// 仅软件启动后首次进入 Harness 页自动扫描一次；之后手动点「扫描本机」才会刷新
 async function load() {
   loading.value = true
   try {
@@ -29,11 +39,6 @@ async function load() {
 function embed(h) {
   if (!h.installed) return
   router.push({ path: '/workspace', query: { id: h.id } })
-}
-
-async function openConfig(h) {
-  const res = await api.harnessOpenConfig(h.id)
-  if (!res.ok) ElMessage.warning(res.message)
 }
 
 function openInject(h) {
@@ -60,7 +65,75 @@ async function doInject() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  if (autoScanned) return
+  autoScanned = true
+  load()
+})
+
+/* ---------------- 模型配置（参考 opencodex：本地代理 + 注入） ---------------- */
+const cfgVisible = ref(false)
+const cfgTarget = ref(null)
+const cfgProviders = ref([])
+const cfgLoading = ref(false)
+const proxyInfo = ref(null)
+// 已选模型：providerId -> 模型名数组（跨供应商累积）
+const cfgSelection = ref({})
+
+const usableProviders = computed(() => cfgProviders.value.filter((p) => !['bedrock', 'openai-responses'].includes(p.type)))
+const selectedCount = computed(() => Object.values(cfgSelection.value).reduce((n, arr) => n + arr.length, 0))
+
+function cfgSelectionModels() {
+  return Object.entries(cfgSelection.value).flatMap(([providerId, models]) =>
+    models.map((model) => ({ providerId, model }))
+  )
+}
+
+async function openConfigure(h) {
+  cfgTarget.value = h
+  cfgProviders.value = (await api.providerGetAll()) || []
+  if (!usableProviders.value.length) {
+    ElMessage.warning('请先在「模型服务」中添加 OpenAI Compatible / Anthropic / Gemini Provider')
+    return
+  }
+  cfgVisible.value = true
+  proxyInfo.value = await api.proxyStatus()
+}
+
+async function doConfigure() {
+  const selection = cfgSelectionModels()
+  if (!selection.length) {
+    ElMessage.warning('请至少勾选一个模型')
+    return
+  }
+  cfgLoading.value = true
+  try {
+    const r = await api.harnessConfigureModel(cfgTarget.value.id, { selection })
+    if (r.ok) {
+      cfgVisible.value = false
+      ElMessage.success(`已配置：${cfgTarget.value.name} 通过本地代理可使用 ${selection.length} 个模型`)
+    } else {
+      ElMessage.error({ message: r.message, duration: 8000 })
+    }
+  } finally {
+    cfgLoading.value = false
+  }
+}
+
+function isModelSelected(providerId, model) {
+  return (cfgSelection.value[providerId] || []).includes(model)
+}
+
+function toggleAllOf(providerId, checked) {
+  const p = cfgProviders.value.find((x) => x.id === providerId)
+  cfgSelection.value = checked
+    ? { ...cfgSelection.value, [providerId]: [...(p?.models || [])] }
+    : { ...cfgSelection.value, [providerId]: [] }
+}
+
+function clearSelection() {
+  cfgSelection.value = {}
+}
 </script>
 
 <template>
@@ -68,7 +141,7 @@ onMounted(load)
     <div class="page-head">
       <div>
         <h1 class="page-title">Harness 管理</h1>
-        <p class="page-sub">检测本机桌面级 Agent Harness，启动应用、注入 MCP、打开配置</p>
+        <p class="page-sub">检测本机桌面级 Agent Harness，启动应用、注入 MCP、配置模型</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">扫描本机</el-button>
     </div>
@@ -86,7 +159,7 @@ onMounted(load)
 
     <div v-else class="harness-list">
       <div v-for="h in harnesses" :key="h.id" class="card card-hover harness-card">
-          <img v-if="h.icon" :src="h.icon" class="h-badge-logo" :class="{ 'h-badge-logo-dark': h.id === 'opencode' && appStore.theme === 'dark' }" alt="" />
+          <img v-if="h.icon" :src="h.icon" class="h-badge-logo" :class="{ 'h-badge-logo-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(h.icon || '') }" alt="" />
         <div v-else class="h-badge" :style="{ background: h.color }">{{ h.name.slice(0, 2).toUpperCase() }}</div>
         <div class="h-info">
           <div class="h-name">
@@ -101,11 +174,60 @@ onMounted(load)
         </div>
         <div class="h-actions">
           <el-button size="small" type="primary" :icon="VideoPlay" :disabled="!h.installed" @click="embed(h)">内嵌打开</el-button>
-          <el-button size="small" :icon="FolderOpened" :disabled="!h.configPath" @click="openConfig(h)">配置</el-button>
           <el-button size="small" type="primary" plain :icon="Link" :disabled="!h.installed || !h.canInjectMcp" @click="openInject(h)">注入 MCP</el-button>
+          <el-button v-if="h.canConfigureModel" size="small" plain :icon="MagicStick" :disabled="!h.installed" @click="openConfigure(h)">配置模型</el-button>
         </div>
       </div>
     </div>
+
+    <el-dialog
+      v-model="cfgVisible"
+      :close-on-click-modal="false"
+      :title="`配置模型：${cfgTarget?.name || ''}`"
+      width="min(960px, 92vw)"
+      style="aspect-ratio: 16 / 9; display: flex; flex-direction: column"
+    >
+      <div class="cfg-alert">
+        通过内置本地代理（127.0.0.1:18200）使用「模型服务」里的模型<span v-if="proxyInfo?.running" class="cfg-dot" />
+      </div>
+      <div class="cfg-body">
+        <div v-for="p in usableProviders" :key="p.id" class="card cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-name">{{ p.name }}</span>
+            <el-checkbox
+              size="small"
+              :model-value="(cfgSelection[p.id] || []).length === (p.models || []).length && (p.models || []).length > 0"
+              :indeterminate="(cfgSelection[p.id] || []).length > 0 && (cfgSelection[p.id] || []).length < (p.models || []).length"
+              @change="toggleAllOf(p.id, $event)"
+            >全选</el-checkbox>
+          </div>
+          <div class="cfg-card-row">
+            <span class="cfg-card-label">模型：</span>
+            <el-select
+              v-model="cfgSelection[p.id]"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              placeholder="勾选或输入模型名后回车"
+              style="flex: 1"
+            >
+              <el-option v-for="m in p.models || []" :key="m" :label="m" :value="m" />
+            </el-select>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div class="cfg-footer">
+          <span class="cfg-summary">已选 {{ selectedCount }} 个模型</span>
+          <div class="cfg-footer-btns">
+            <el-button size="small" text @click="clearSelection">清空</el-button>
+            <el-button @click="cfgVisible = false">取消</el-button>
+            <el-button type="primary" :loading="cfgLoading" @click="doConfigure">写入配置</el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="injectVisible" :close-on-click-modal="false" :title="`注入 MCP 到 ${injectTarget?.name || ''}`" width="520px">
       <el-alert type="info" :closable="false" show-icon style="margin-bottom: 14px"
@@ -242,5 +364,137 @@ onMounted(load)
   text-align: center;
   color: var(--oh-text-dim);
   padding: 20px 0;
+}
+
+/* ---- 配置模型弹窗（16:9 多供应商卡片） ---- */
+.cfg-alert {
+  font-size: 12px;
+  color: var(--oh-text-dim);
+  margin-bottom: 10px;
+}
+
+.cfg-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--oh-success);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.cfg-body {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  align-content: start;
+  padding: 4px 2px;
+}
+
+.cfg-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cfg-model {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+  color: var(--oh-text-2);
+  background: var(--oh-bg-input);
+  border: 1px solid var(--oh-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    border-color var(--oh-dur) var(--oh-ease),
+    background var(--oh-dur) var(--oh-ease),
+    color var(--oh-dur) var(--oh-ease);
+
+  &:hover {
+    border-color: var(--oh-primary);
+  }
+
+  &.on {
+    background: var(--oh-active);
+    border-color: var(--oh-primary);
+    color: var(--oh-primary);
+    font-weight: 600;
+  }
+}
+
+.cfg-none {
+  font-size: 12px;
+  color: var(--oh-text-dim);
+}
+
+.cfg-card {
+  border: 1px solid var(--oh-border);
+  border-radius: var(--oh-radius);
+  padding: 14px 16px;
+}
+
+.cfg-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cfg-card-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.cfg-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cfg-card-label {
+  font-size: 13px;
+  color: var(--oh-text-dim);
+  flex-shrink: 0;
+}
+
+.cfg-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+}
+
+/* el-dialog 内部结构用 :deep 穿透：body 撑满剩余高度，footer 才能贴到弹窗底部 */
+:deep(.el-dialog) {
+  display: flex;
+  flex-direction: column;
+}
+
+:deep(.el-dialog__body) {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.cfg-summary {
+  font-size: 12px;
+  color: var(--oh-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  margin-right: auto;
+}
+
+.cfg-footer-btns {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 </style>

@@ -1,5 +1,6 @@
 <script setup>
 import { api } from '@/api'
+import OhLogo from '@/components/OhLogo.vue'
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Promotion, Delete, VideoPause, EditPen } from '@element-plus/icons-vue'
@@ -20,7 +21,7 @@ const messagesEl = ref(null)
 let unsubscribe = null
 
 const suggestions = [
-  '帮我总结一下当前项目的目录结构',
+  '帮我写一段天马行空的文章',
   '写一个正则表达式，匹配 IPv4 地址',
   '把这段话翻译成英文：一切皆文件',
   '解释一下 MCP 协议的核心概念'
@@ -333,7 +334,8 @@ onUnmounted(() => unsubscribe?.())
       <div ref="messagesEl" class="messages">
         <div v-if="activeSession" class="messages-col">
           <div v-for="(m, i) in activeSession.messages" :key="i" class="msg" :class="m.role">
-            <div class="msg-avatar" :class="m.role">{{ m.role === 'user' ? '你' : 'OH' }}</div>
+            <OhLogo v-if="m.role === 'assistant'" :size="30" class="msg-avatar assistant" />
+            <div v-else class="msg-avatar user">你</div>
             <div class="msg-body">
               <div v-if="m.reasoning" class="msg-reasoning" :class="{ open: !!openReasonings[i] }">
                 <button class="reasoning-head" type="button" @click="toggleReasoning(i)">
@@ -371,7 +373,7 @@ onUnmounted(() => unsubscribe?.())
           </div>
         </div>
         <div v-else class="welcome">
-          <img :src="appStore.theme === 'dark' ? '/logo-dark.png' : '/logo.png'" class="welcome-mark" alt="OpenHarness" />
+          <OhLogo :size="52" class="welcome-mark" />
           <h2 class="welcome-title">开始一段新对话</h2>
           <p class="welcome-sub">选择上方的 Provider 与模型，或从这些问题开始：</p>
           <div class="welcome-chips">
@@ -412,7 +414,7 @@ onUnmounted(() => unsubscribe?.())
 }
 
 .session-panel {
-  width: 160px;
+  width: 112px;
   flex-shrink: 0;
   padding: 44px 6px 14px;
   display: flex;
@@ -699,11 +701,7 @@ onUnmounted(() => unsubscribe?.())
 }
 
 .welcome-mark {
-  width: 52px;
-  height: 52px;
-  border-radius: 14px;
   margin-bottom: 16px;
-  object-fit: contain;
 }
 
 .welcome-title {
