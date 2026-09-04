@@ -81,11 +81,10 @@ function launchExe(exePath, args = []) {
 
 
 /**
- * 启动 CLI 命令。写临时 .bat 后以 cmd /c 执行。
- * @param {boolean} [opts.hidden] 隐藏启动（CREATE_NO_WINDOW，全程无控制台窗口，适合只跑服务的 Web 型 harness）；
- *   否则用 conhost 显式宿主（绕开 wt 接管、附着后色彩丢失），返回 hostPid 供定位 cmd 子窗口
+ * 启动 CLI 命令。写临时 .bat 后以 conhost 显式宿主（绕开 wt 接管、附着后色彩丢失），返回 hostPid 供定位 cmd 子窗口
+ * （Web 型 harness 起后台服务改用 pty.openSilent：ConPTY 虚拟终端能隐藏自拉起新控制台窗口的进程）
  */
-function launchCliConsole(title, command, opts = {}) {
+function launchCliConsole(title, command) {
   try {
     const env = { ...process.env }
     delete env.ELECTRON_RENDERER_URL
@@ -93,15 +92,8 @@ function launchCliConsole(title, command, opts = {}) {
     env.COLORTERM = 'truecolor'
     env.TERM = 'xterm-256color'
     const bat = path.join(env.TEMP || process.cwd(), title + '.bat')
-    const lines = ['@echo off', 'chcp 65001 >nul']
-    if (!opts.hidden) lines.push('title ' + title)
-    lines.push(command, '')
+    const lines = ['@echo off', 'chcp 65001 >nul', 'title ' + title, command, '']
     fs.writeFileSync(bat, lines.join(String.fromCharCode(13, 10)))
-    if (opts.hidden) {
-      const child = spawn('cmd.exe', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, env })
-      child.unref()
-      return { ok: true }
-    }
     const child = spawn('conhost.exe', ['cmd', '/c', bat], { detached: true, stdio: 'ignore', env })
     child.unref()
     return { ok: true, hostPid: child.pid }

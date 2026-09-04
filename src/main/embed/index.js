@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import net from 'node:net'
 import bridge from './win32-bridge'
 import { launchExe, launchCliConsole } from '../harnesses/base'
+import * as pty from '../pty'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -197,10 +198,14 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       // Web 型 CLI：动态分配空闲端口，替换命令里的 {port} —— 无需 killport，天然不冲突
       port = await getFreePort()
       cli = cli.replace('{port}', String(port))
-      // Web 型 harness：隐藏启动服务（CREATE_NO_WINDOW，全程无 cmd/conhost 弹窗），UI 用 iframe 加载
+      // Web 型 harness：用 ConPTY 隐藏宿主（dsh 等会自拉起新控制台窗口，windowsHide 拦不住，
+      // ConPTY 虚拟终端让任何子进程都渲染进虚拟终端，全程无真实窗口），UI 用 iframe 加载
       coldStart = true
-      launchCliConsole(title, cli, { hidden: true })
+      const host = pty.openSilent(harnessId, cli)
+      if (!host.ok) return { ok: false, message: host.message || '隐藏宿主启动失败' }
       const ok = await waitForPort(port, 60000)
+      // 兜底：服务进程自身（如 node 再启子进程）可能创建的控制台窗口，一并隐藏
+      bridge.send('hidebyport', String(port)).catch(() => {})
       if (!ok) {
         await bridge.send('killport', String(port))
         return { ok: false, message: `服务未能在预期时间内启动（${cli}）` }
@@ -421,10 +426,11 @@ export async function release(harnessId) {
 /** 关闭指定（默认当前激活的）嵌入：先脱离再杀掉应用进程树 */
 export async function closeAndKill(harnessId) {
   const id = harnessId || activeId
-  // Web 型 harness：杀服务进程树（按端口反查 PID）
+  // Web 型 harness：杀服务进程树（按端口反查 PID），并结束 ConPTY 隐藏宿主
   if (webServices.has(id)) {
     const { port } = webServices.get(id)
     await bridge.send('killport', String(port))
+    pty.closeSilent(id)
     webServices.delete(id)
     if (activeId === id) activeId = null
     return
@@ -445,8 +451,9 @@ export async function closeAndKill(harnessId) {
 export async function releaseAll() {
   setClipRect(null)
   // Web 型服务：应用退出时一并结束
-  for (const [, s] of webServices) {
+  for (const [id, s] of webServices) {
     await bridge.send('killport', String(s.port))
+    pty.closeSilent(id)
   }
   webServices.clear()
   for (const id of [...attached.keys()]) {
