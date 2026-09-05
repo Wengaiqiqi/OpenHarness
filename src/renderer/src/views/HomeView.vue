@@ -41,8 +41,10 @@ function openWorkspace(h) {
 <template>
   <div class="page home">
     <section class="hero">
-      <h1 class="hero-title">OpenHarness</h1>
-      <p class="hero-sub">桌面级 Agent Harness 统一集成服务 —— 一个入口，管理你所有的 AI Agent</p>
+      <div class="hero-text">
+        <h1 class="hero-title">OpenHarness</h1>
+        <p class="hero-sub">桌面级 Agent Harness 统一集成服务 —— 一个入口，管理你所有的 AI Agent</p>
+      </div>
       <div class="hero-actions">
         <el-button type="primary" size="large" @click="router.push('/harness')">管理 Harness</el-button>
         <el-button size="large" @click="router.push('/chat')">开始对话</el-button>
@@ -97,11 +99,20 @@ function openWorkspace(h) {
 
 <style scoped lang="scss">
 .home {
-  max-width: 1080px;
+  max-width: 1760px;
 }
 
 .hero {
   padding: 44px 0 36px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.hero-text {
+  min-width: 0;
 }
 
 .hero-title {
@@ -125,7 +136,7 @@ function openWorkspace(h) {
 
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 14px;
   margin-bottom: 36px;
 }
@@ -196,7 +207,7 @@ function openWorkspace(h) {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px;
 }
 

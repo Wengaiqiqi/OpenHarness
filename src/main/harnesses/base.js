@@ -123,6 +123,21 @@ function firstExists(paths) {
   return null
 }
 
+/**
+ * 中央 cli 自愈：cli 不在 PATH 时按 exeCandidates 逐个回退（修"已安装却检测不到/启动失败"）。
+ * 结果记忆在适配器对象上，进程内只解析一次。同步覆盖所有 PTY 型 harness。
+ */
+export async function resolveCliCommand(adapter) {
+  if (adapter._cliResolved) return adapter._cliResolved
+  let cli = adapter.cli
+  if (cli && !(await commandExists(String(cli).trim().split(/\s+/)[0])) && adapter.exeCandidates) {
+    const exe = firstExists(adapter.exeCandidates)
+    if (exe) cli = exe
+  }
+  adapter._cliResolved = cli
+  return cli
+}
+
 /** 探测命令是否在 PATH 中（取命令首词，兼容带参数/占位符的 cli 字段） */
 async function commandExists(command) {
   const name = String(command || '').trim().split(/\s+/)[0]

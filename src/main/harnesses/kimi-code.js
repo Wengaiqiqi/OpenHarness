@@ -1,4 +1,4 @@
-import { USERPROFILE, exists, firstExists, commandExists } from './base'
+import { APPDATA, LOCALAPPDATA, USERPROFILE, exists, firstExists, commandExists } from './base'
 import { mergeTomlProvider } from './agent-config'
 
 /** Kimi Code：模型配置注入到 ~/.kimi-code/config.toml（TOML） */
@@ -9,6 +9,7 @@ const kimi_code = {
   color: '#111111',
   icon: 'https://cdn.simpleicons.org/kimi/111111',
   cli: 'kimi',
+  exeCandidates: [`${APPDATA}\\npm\\kimi.cmd`, `${USERPROFILE}\\.kimi\\bin\\kimi.exe`, `${LOCALAPPDATA}\\Programs\\kimi\\bin\\kimi.exe`],
   usePty: true,
   processHints: [],
   configCandidates: [`${USERPROFILE}\\.kimi-code\\config.toml`],

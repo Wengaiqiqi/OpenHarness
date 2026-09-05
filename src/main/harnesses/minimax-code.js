@@ -1,4 +1,4 @@
-import { USERPROFILE, exists, firstExists, commandExists } from './base'
+import { APPDATA, USERPROFILE, exists, firstExists, commandExists } from './base'
 import { mergeYamlAgentProviders } from './agent-config'
 
 /** MiniMax Code：模型配置注入到 ~/.minimax/config.yaml（YAML） */
@@ -9,6 +9,7 @@ const minimax_code = {
   color: '#ff5722',
   icon: 'https://cdn.simpleicons.org/minimax/ff5722',
   cli: 'minimax',
+  exeCandidates: [`${APPDATA}\\npm\\minimax.cmd`, `${USERPROFILE}\\.minimax\\bin\\minimax.exe`],
   usePty: true,
   processHints: [],
   configCandidates: [`${USERPROFILE}\\.minimax\\config.yaml`],

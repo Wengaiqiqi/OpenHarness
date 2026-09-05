@@ -1,4 +1,4 @@
-import { USERPROFILE, exists, firstExists, commandExists } from './base'
+import { APPDATA, USERPROFILE, exists, firstExists, commandExists } from './base'
 import { mergeJsonAgentProviders } from './agent-config'
 
 /** Pi：模型配置注入到 ~/.pi/agent/models.json（JSON） */
@@ -9,6 +9,7 @@ const pi = {
   color: '#8b5cf6',
   icon: 'icons/pi.svg',
   cli: 'pi',
+  exeCandidates: [`${APPDATA}\\npm\\pi.cmd`, `${USERPROFILE}\\.pi\\bin\\pi.exe`],
   usePty: true,
   processHints: [],
   configCandidates: [`${USERPROFILE}\\.pi\\agent\\models.json`],

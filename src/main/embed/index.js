@@ -96,7 +96,9 @@ public class OHWatch {
 }
 "@
 Add-Type -TypeDefinition $def
-$script:names = @(__NAMES__)
+# 常驻钩子：启动即装钩子（消除 PS 预热竞态），目标进程名经 %TEMP% 文件热更新
+$targetsFile = Join-Path $env:TEMP 'oh-watcher-targets.txt'
+$script:names = @()
 $script:hidden = @{}
 $cb = [OHWatch+WinEventProc]{
   param($hHook, $ev, $hwnd, $idObject, $idChild, $thread, $time)
@@ -121,49 +123,65 @@ $cb = [OHWatch+WinEventProc]{
 }
 $g = [OHWatch]::SetWinEventHook(0x8000, 0x8003, [IntPtr]::Zero, $cb, 0, 0, 2)
 Add-Type -AssemblyName System.Windows.Forms
-$deadline = [DateTime]::UtcNow.AddMilliseconds(25000)
-while ([DateTime]::UtcNow -lt $deadline) {
+$lastRead = 0
+# 常驻泵循环：DoEvents 派发钩子回调，每 500ms 热读一次目标名单；读到 STOP 退出
+while ($true) {
   [System.Windows.Forms.Application]::DoEvents()
-  Start-Sleep -Milliseconds 25
+  Start-Sleep -Milliseconds 10
+  $now = [Environment]::TickCount
+  if ($now - $lastRead -gt 200) {
+    $lastRead = $now
+    try {
+      $content = [IO.File]::ReadAllText($targetsFile)
+      $newNames = @($content.Trim() -split ',' | Where-Object { $_ })
+      if (($newNames -join ',') -ne ($script:names -join ',')) {
+        $script:names = $newNames
+        $script:hidden.Clear()
+      }
+    } catch {}
+  }
 }
 if ($g -ne [IntPtr]::Zero) { [OHWatch]::UnhookWinEvent($g) | Out-Null }
 `
 
-let watcherTs = 0
 let watcherProc = null
 
-/** 终止看门钩子：附着流程拿到主窗口后必须立刻停，否则它会 HID 掉刚吸附/刚显示的窗口（HID 去重永不恢复） */
-function stopWatcher() {
-  if (watcherProc) {
-    try { watcherProc.kill() } catch {}
-    watcherProc = null
-  }
+function watcherTargetsFile() {
+  return path.join(process.env.TEMP || process.cwd(), 'oh-watcher-targets.txt')
 }
 
 /**
- * 启动窗口创建看门钩子（15 秒内不叠加多个；钩子进程 25 秒后自行退出）。
- * 必须走 -File：-Command 传递多行 here-string 脚本时 PowerShell 会静默提前退出（无 stderr、code 0），
- * 钩子从未安装过 —— 这是看门钩子一度完全失效的根因。
+ * 停止停靠：清空目标名单（钩子进程常驻预热，不杀——
+ * 杀掉后下次冷启动要重新预热 1.5-3 秒，logo 闪窗会抢在钩子装好之前出现）
  */
-function startWatcher(processHints = [], force = false) {
+function stopWatcher() {
+  // 清空名单即可：钩子进程保持常驻预热，下次冷启动零竞态
+  try { fs.writeFileSync(watcherTargetsFile(), '', 'utf-8') } catch {}
+}
+
+/**
+ * 布好看门钩子并设置目标进程名。钩子进程常驻（首次调用时拉起，之后复用），
+ * 名单经目标文件热更新（毫秒级生效）——彻底消除 PS 预热期 logo 闪窗抢跑的竞态。
+ * 必须走 -File：-Command 传多行脚本时 PowerShell 会静默提前退出（钩子从未装上过的根因）。
+ */
+export function startWatcher(processHints = []) {
   const names = (processHints || []).map((n) => String(n).replace(/['",]/g, '')).filter(Boolean)
-  if (!names.length) return
-  const now = Date.now()
-  if (!force && now - watcherTs < 15000) return
-  watcherTs = now
-  const script = WATCHER_PS.replace('__NAMES__', names.map((n) => `'${n}'`).join(','))
   try {
-    const scriptPath = path.join(process.env.TEMP || process.cwd(), 'oh-watcher.ps1')
-    fs.writeFileSync(scriptPath, script, 'utf-8')
-    // 不能用 detached：DETACHED_PROCESS 下 PowerShell 完全没有控制台会静默退出/挂起，
-    // 钩子永远装不上。windowsHide（CREATE_NO_WINDOW，隐藏控制台）是已被验证可用的组合
-    const w = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
-      stdio: 'ignore',
-      windowsHide: true
-    })
-    w.on('error', () => {})
-    w.unref()
-    watcherProc = w
+    if (!watcherProc || watcherProc.exitCode !== null) {
+      const scriptPath = path.join(process.env.TEMP || process.cwd(), 'oh-watcher.ps1')
+      fs.writeFileSync(scriptPath, WATCHER_PS, 'utf-8')
+      // 初始为空名单：钩子常驻但不停靠任何窗口（STOP 语义已废除，退出统一走进程 kill）
+      fs.writeFileSync(watcherTargetsFile(), '', 'utf-8')
+      // 不能用 detached：DETACHED_PROCESS 下 PowerShell 完全没有控制台会静默退出/挂起。
+      // windowsHide（CREATE_NO_WINDOW，隐藏控制台）是已被验证可用的组合
+      watcherProc = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      watcherProc.on('error', () => {})
+      watcherProc.unref()
+    }
+    fs.writeFileSync(watcherTargetsFile(), names.join(','), 'utf-8')
   } catch {}
 }
 
@@ -347,7 +365,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       // GUI 冷启动：Electron 应用（OpenCode 等）启动初期会自毁/重建主窗口，
       // 一次附着可能落在短命窗口上。策略：布钩子停靠新窗口 → 找 → 附 → 验存活 →
       // 死了就重找重附（预算内循环），直到窗口稳定为止。
-      startWatcher(processHints, true)
+      startWatcher(processHints)
       const r = launchExe(exePath)
       if (!r.ok) return r
       pid = r.pid
@@ -357,12 +375,13 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       while (Date.now() < deadline) {
         hwnd = await findWindowByNamesFast(processHints, 12000, 250)
         if (!hwnd) break
-        // 拿到主窗口后立刻停钩子：它的停靠动作会挪走刚吸附的窗口
-        stopWatcher()
+        // 注意：此刻不能停看门钩子——ZCode 等 VS Code 系应用启动早期会自毁重建主窗口，
+        // 重建的新窗口必须继续被停靠，否则以独立弹窗形式出现在屏幕上；
+        // 钩子按 hwnd 去重，不会挪动我们已吸附进容器的窗口，停钩子推迟到稳定之后
         const attach = await attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCold: false })
         if (!attach.ok) {
           attached.delete(harnessId)
-          startWatcher(processHints, true)
+          startWatcher(processHints)
           continue
         }
         hwnd = attach.hwnd
@@ -378,6 +397,8 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
           if (!m || m[1] !== '1') { stable = false; break }
         }
         if (stable) {
+          // 稳定后才停钩子：此后不会再有需要停靠的新窗口
+          stopWatcher()
           if (isLatest(harnessId)) {
             activate(harnessId, initialRect)
             bridge.fire('show', hwnd, SW_SHOW)
@@ -389,7 +410,12 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
         }
         // 窗口被应用自毁：清登记重来（重建的新窗口由钩子停靠在屏幕外）
         attached.delete(harnessId)
-        startWatcher(processHints, true)
+        startWatcher(processHints)
+      }
+      stopWatcher()
+      // 附着失败：杀掉刚拉起的应用进程树，避免僵尸窗口悬在屏幕上
+      if (pid) {
+        exec('taskkill', ['/T', '/F', '/PID', pid]).catch(() => {})
       }
       stopWatcher()
       return { ok: false, message: '未能附着应用窗口（应用可能启动失败或窗口未就绪）' }
@@ -523,6 +549,14 @@ function safeWarn(...a) {
 }
 
 export function setClipRect(rect) {
+  // 非工作台页面上禁止建立裁剪/拉回：窗口 move/resize 事件在别的页面也会触发，
+  // 不设门槛的话会把停靠中的窗口强行拉回容器矩形，盖在其他页面上（越界）
+  if (rect && !workspaceVisible) {
+    allowedRect = null
+    if (clipTimer) clearInterval(clipTimer)
+    clipTimer = null
+    return
+  }
   allowedRect = rect || null
   if (allowedRect) lastAllowedRect = allowedRect
   if (allowedRect) {
@@ -654,6 +688,11 @@ export async function closeAndKill(harnessId) {
 
 /** 释放全部嵌入（应用退出时调用，避免外部应用残留无边框样式）。杀服务并发执行 */
 export async function releaseAll() {
+  stopWatcher()
+  if (watcherProc) {
+    try { watcherProc.kill() } catch {}
+    watcherProc = null
+  }
   setClipRect(null)
   const kills = []
   for (const [id, s] of webServices) {

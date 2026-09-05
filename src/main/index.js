@@ -6,6 +6,7 @@ import harnessRegistry from './harnesses'
 import { createChatService } from './chat'
 import { createModelProxy } from './proxy'
 import * as embed from './embed'
+import { resolveCliCommand } from './harnesses/base'
 import * as pty from './pty'
 
 Store.initRenderer()
@@ -94,6 +95,10 @@ app.whenReady().then(() => {
   screen.on('display-metrics-changed', resyncEmbed)
 
   autoStartProxy()
+  // 预热看门钩子：PowerShell 拉起+编译要 1.5-3 秒，若等冷启动才拉起，
+  // 应用的 logo 闪窗会抢在钩子生效前出现（毫秒级闪现）。启动时即常驻预热，
+  // 冷启动时只经文件热更目标名单（毫秒级生效），窗口创建瞬间即被停靠——零闪现
+  embed.startWatcher([])
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -324,7 +329,8 @@ async function openHarness(id, cssRect) {
       // PTY 渲染在 HTML 里，而原生附着窗口永远浮在 HTML 之上——
       // 必须先把已附着的老窗口停靠屏幕外，否则它盖住终端，表现为"卡死在新界面"
       embed.parkForNonNative(id)
-      return pty.open(id, adapter.cli)
+      // 中央 cli 自愈：PATH 外安装的 harness（grok/codex/kimi…）按 exeCandidates 回退
+      return pty.open(id, await resolveCliCommand(adapter))
     }
     pty.deactivate()
     embed.setLatest(id)
