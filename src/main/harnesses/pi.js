@@ -9,6 +9,7 @@ const pi = {
   color: '#8b5cf6',
   icon: 'icons/pi.svg',
   cli: 'pi',
+  usePty: true,
   processHints: [],
   configCandidates: [`${USERPROFILE}\\.pi\\agent\\models.json`],
 

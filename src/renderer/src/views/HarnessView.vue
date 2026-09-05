@@ -80,9 +80,24 @@ const cfgLoading = ref(false)
 const proxyInfo = ref(null)
 // 已选模型：providerId -> 模型名数组（跨供应商累积）
 const cfgSelection = ref({})
+// 上次配置记录（main 进程持久化）：打开弹窗时回显
+const cfgHistory = ref(null)
 
 const usableProviders = computed(() => cfgProviders.value.filter((p) => !['bedrock', 'openai-responses'].includes(p.type)))
 const selectedCount = computed(() => Object.values(cfgSelection.value).reduce((n, arr) => n + arr.length, 0))
+
+const cfgHistoryText = computed(() => {
+  const h = cfgHistory.value
+  if (!h?.items?.length) return ''
+  const byProvider = {}
+  for (const it of h.items) {
+    (byProvider[it.providerName] ||= []).push(it.model)
+  }
+  const parts = Object.entries(byProvider).map(([name, models]) => `${name} · ${models[0]}${models.length > 1 ? ` 等 ${models.length} 个模型` : ''}`)
+  const d = new Date(h.updatedAt)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${parts.join('；')}（${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}）`
+})
 
 function cfgSelectionModels() {
   return Object.entries(cfgSelection.value).flatMap(([providerId, models]) =>
@@ -96,6 +111,17 @@ async function openConfigure(h) {
   if (!usableProviders.value.length) {
     ElMessage.warning('请先在「模型服务」中添加 OpenAI Compatible / Anthropic / Gemini Provider')
     return
+  }
+  // 回显上次配置：勾选仍存在于供应商模型列表里的项；完整记录在提示条展示
+  cfgHistory.value = (await api.modelConfigHistory(h.id)) || null
+  cfgSelection.value = {}
+  for (const it of cfgHistory.value?.items || []) {
+    const avail = cfgProviders.value.find((p) => p.id === it.providerId)?.models || []
+    if (!avail.includes(it.model)) continue
+    const cur = cfgSelection.value[it.providerId] || []
+    if (!cur.includes(it.model)) {
+      cfgSelection.value = { ...cfgSelection.value, [it.providerId]: [...cur, it.model] }
+    }
   }
   cfgVisible.value = true
   proxyInfo.value = await api.proxyStatus()
@@ -112,6 +138,7 @@ async function doConfigure() {
     const r = await api.harnessConfigureModel(cfgTarget.value.id, { selection })
     if (r.ok) {
       cfgVisible.value = false
+      cfgHistory.value = (await api.modelConfigHistory(cfgTarget.value.id)) || null
       ElMessage.success(`已配置：${cfgTarget.value.name} 通过本地代理可使用 ${selection.length} 个模型`)
     } else {
       ElMessage.error({ message: r.message, duration: 8000 })
@@ -191,6 +218,9 @@ function clearSelection() {
       <div class="cfg-alert">
         通过内置本地代理（127.0.0.1:18200）使用「模型服务」里的模型<span v-if="proxyInfo?.running" class="cfg-dot" />
       </div>
+      <div v-if="cfgHistoryText" class="cfg-history">
+        上次配置：{{ cfgHistoryText }}——再次写入将覆盖
+      </div>
       <div class="cfg-body">
         <div v-for="p in usableProviders" :key="p.id" class="card cfg-card">
           <div class="cfg-card-head">
@@ -210,6 +240,8 @@ function clearSelection() {
               filterable
               allow-create
               default-first-option
+              collapse-tags
+              collapse-tags-tooltip
               placeholder="勾选或输入模型名后回车"
               style="flex: 1"
             >
@@ -372,6 +404,16 @@ function clearSelection() {
   font-size: 12px;
   color: var(--oh-text-dim);
   margin-bottom: 10px;
+}
+
+.cfg-history {
+  font-size: 12px;
+  color: var(--oh-primary);
+  background: var(--oh-primary-soft);
+  border-radius: var(--oh-radius-sm);
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  word-break: break-all;
 }
 
 .cfg-dot {

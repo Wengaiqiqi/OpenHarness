@@ -1,4 +1,4 @@
-import { APPDATA, USERPROFILE, exists, firstExists, launchExe } from './base'
+import { APPDATA, USERPROFILE, exists, firstExists, launchExe, commandExists } from './base'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -15,6 +15,7 @@ const codex = {
   color: '#10a37f',
   icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/openai.svg',
   cli: 'codex',
+  usePty: true,
   processHints: ['codex'],
   exeCandidates: [`${USERPROFILE}\\.codex\\bin\\codex.exe`, `${APPDATA}\\npm\\codex.cmd`, `${USERPROFILE}\\AppData\\Roaming\\npm\\codex.cmd`],
   configCandidates: [`${USERPROFILE}\\.codex\\config.toml`],

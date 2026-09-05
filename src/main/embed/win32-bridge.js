@@ -135,9 +135,16 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                   }
       'findconpid' {
                     # 按进程树找控制台窗口（TUI 程序会改掉控制台标题，标题匹配存在竞态）：
-                    # hostPid 两代内的子孙进程拥有的 ConsoleWindowClass，优先可见/有面积的
+                    # hostPid 两代内的子孙进程拥有的 ConsoleWindowClass，优先可见/有面积的。
+                    # 进程表缓存 1.5s：Get-CimInstance 全表约 200-500ms，冷启动每 400ms 轮询一次
+                    # 会把命令队列打满，导致已打开的 harness 界面卡顿
                     $hostPid2 = [int]$p[1]
-                    $rows = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+                    $tick4 = [Environment]::TickCount
+                    if (-not $script:crowsTs -or ($tick4 - $script:crowsTs) -gt 1500) {
+                      $script:crows = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+                      $script:crowsTs = $tick4
+                    }
+                    $rows = $script:crows
                     $script:cpids = @{}
                     $script:cpids[$hostPid2] = 1
                     foreach ($r0 in $rows) { if ($script:cpids.ContainsKey([int]$r0.ParentProcessId)) { $script:cpids[[int]$r0.ProcessId] = 1 } }

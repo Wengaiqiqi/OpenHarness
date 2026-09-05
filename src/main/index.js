@@ -78,11 +78,17 @@ app.whenReady().then(() => {
 
   // 窗口移动/缩放/最大化/跨屏/DPI 变化：按最新 DPI 重算嵌入矩形并重新钳制
   const resyncEmbed = () => applyClip()
+  // 最小化/被其他应用覆盖后回到 OpenHarness：Windows 会把子窗口一起隐藏且恢复时不
+  // 自动显示，必须主动 SW_SHOW + 重新贴合，否则嵌入的 harness 表现为"卡死"。
+  // 只挂在 restore/focus/show 上——move/resize 期间频繁重声明会打断嵌入窗口内部拖动
+  const reassertEmbed = () => embed.reassertActive()
   mainWindow.on('move', resyncEmbed)
   mainWindow.on('resize', resyncEmbed)
-  mainWindow.on('maximize', resyncEmbed)
-  mainWindow.on('unmaximize', resyncEmbed)
-  mainWindow.on('restore', resyncEmbed)
+  mainWindow.on('maximize', () => { resyncEmbed(); reassertEmbed() })
+  mainWindow.on('unmaximize', () => { resyncEmbed(); reassertEmbed() })
+  mainWindow.on('restore', () => { resyncEmbed(); reassertEmbed() })
+  mainWindow.on('focus', reassertEmbed)
+  mainWindow.on('show', () => { resyncEmbed(); reassertEmbed() })
   mainWindow.on('enter-full-screen', resyncEmbed)
   mainWindow.on('leave-full-screen', resyncEmbed)
   screen.on('display-metrics-changed', resyncEmbed)
@@ -315,6 +321,9 @@ async function openHarness(id, cssRect) {
       pty.setLatest(id)
       // 同步顶掉 embed 的最新目标，避免更早的原生慢冷启动误判为新目标而抢前台
       embed.setLatest(id)
+      // PTY 渲染在 HTML 里，而原生附着窗口永远浮在 HTML 之上——
+      // 必须先把已附着的老窗口停靠屏幕外，否则它盖住终端，表现为"卡死在新界面"
+      embed.parkForNonNative(id)
       return pty.open(id, adapter.cli)
     }
     pty.deactivate()
@@ -426,9 +435,24 @@ ipcMain.handle('harness:configureModel', async (_e, id, { selection }) => {
       models: resolved.map((x) => x.model),
       model: primary.model
     })
-    if (r.ok) r.proxy = modelProxy.status()
+    if (r.ok) {
+      r.proxy = modelProxy.status()
+      // 配置历史：下次打开「配置模型」弹窗时回显上次选择
+      const history = store.get('modelConfigHistory') || {}
+      history[id] = {
+        items: resolved.map((x) => ({ providerId: x.provider.id, providerName: x.provider.name, model: x.model })),
+        configPath: r.path || null,
+        updatedAt: Date.now()
+      }
+      store.set('modelConfigHistory', history)
+    }
     return r
   } catch (err) {
     return { ok: false, message: String(err) }
   }
+})
+
+ipcMain.handle('model-config:history', (_e, id) => {
+  const history = store.get('modelConfigHistory') || {}
+  return history[id] || null
 })

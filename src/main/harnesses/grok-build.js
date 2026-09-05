@@ -9,13 +9,20 @@ const grok_build = {
   color: '#7f7f7f',
   icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/grok.svg',
   cli: 'grok',
+  usePty: true,
   processHints: [],
+  exeCandidates: [`${USERPROFILE}\\.grok\\bin\\grok.exe`],
   configCandidates: [`${USERPROFILE}\\.grok\\config.toml`],
 
   async detect() {
     const configPath = firstExists(this.configCandidates)
+    const exe = firstExists(this.exeCandidates)
+    // 命令自愈：~/.grok/bin 常常不在 PATH 里，detect 时把 cli 修正为完整路径
+    if (!(await commandExists(this.cli)) && exe) {
+      this.cli = exe
+    }
     const binary = await commandExists(this.cli)
-    return { installed: binary && !!configPath, exePath: null, configPath, canInjectMcp: false, canConfigureModel: true }
+    return { installed: !!(binary || configPath), exePath: exe, configPath, canInjectMcp: false, canConfigureModel: true }
   },
   configPath() {
     return firstExists(this.configCandidates) || this.configCandidates[0]

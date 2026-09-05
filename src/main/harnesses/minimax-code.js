@@ -9,6 +9,7 @@ const minimax_code = {
   color: '#ff5722',
   icon: 'https://cdn.simpleicons.org/minimax/ff5722',
   cli: 'minimax',
+  usePty: true,
   processHints: [],
   configCandidates: [`${USERPROFILE}\\.minimax\\config.yaml`],
 

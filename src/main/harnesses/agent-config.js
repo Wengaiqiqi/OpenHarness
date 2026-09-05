@@ -15,14 +15,46 @@ const PROXY_BASE = 'http://127.0.0.1:18200/v1'
 const PROXY_TOKEN = 'openharness'
 const V2_PACKAGE = '@opencode-ai/ai/providers/openai-compatible'
 
+function isFile(p) {
+  try {
+    return fs.existsSync(p) && fs.statSync(p).isFile()
+  } catch {
+    return false
+  }
+}
+
 function backupAndWrite(p, data) {
   fs.mkdirSync(path.dirname(p), { recursive: true })
-  if (fs.existsSync(p)) fs.copyFileSync(p, p + '.openharness.bak')
+  // 目标若是目录（候选路径配错时）直接 copyFile 会 EPERM
+  if (isFile(p)) fs.copyFileSync(p, p + '.openharness.bak')
   fs.writeFileSync(p, data, 'utf-8')
 }
 
 function readDoc(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf-8')) } catch { return {} }
+}
+
+/**
+ * 把结构化鉴权配置合成到 URL/请求头，兼容所有 MCP 服务的接入格式：
+ *   query  → URL 参数（参数名可配：key/token/api_key…，默认 key）
+ *   bearer → Authorization: Bearer <key>
+ *   header → 自定义请求头（头名可配，默认 X-API-Key）
+ * 无 auth 结构的旧记录原样透传（URL 里已拼好 key 的兼容）
+ */
+export function applyAuth(server) {
+  let url = server.url || ''
+  const headers = { ...(server.headers || {}) }
+  const auth = server.auth
+  const key = (auth?.key || '').trim()
+  if (key && auth.mode === 'query') {
+    const name = encodeURIComponent(auth.name || 'key')
+    url += (url.includes('?') ? '&' : '?') + `${name}=${encodeURIComponent(key)}`
+  } else if (key && auth.mode === 'bearer') {
+    headers.Authorization = `Bearer ${key}`
+  } else if (key && auth.mode === 'header') {
+    headers[auth.name || 'X-API-Key'] = key
+  }
+  return { url, headers }
 }
 
 function modelMap(models) {
@@ -71,11 +103,41 @@ export function mergeYamlAgentProviders(configPath, { models }, rootPath = ['pro
   return { ok: true, path: configPath }
 }
 
+/** opencode 形状的 mcp 块：remote（SSE/HTTP）+ local（stdio），合并注入 opencode.json */
+export function mergeOpencodeMcp(configPath, servers) {
+  const doc = readDoc(configPath)
+  const existing = doc.mcp || {}
+  const injected = []
+  for (const s of servers || []) {
+    if (s.transport === 'http' && s.url) {
+      const { url, headers } = applyAuth(s)
+      existing[s.name] = {
+        type: 'remote',
+        url,
+        enabled: true,
+        ...(Object.keys(headers).length ? { headers } : {})
+      }
+      injected.push(s.name)
+    } else if (s.command) {
+      existing[s.name] = {
+        type: 'local',
+        command: [s.command, ...(s.args || []).filter(Boolean)],
+        enabled: true,
+        ...(s.env ? { env: s.env } : {})
+      }
+      injected.push(s.name)
+    }
+  }
+  doc.mcp = existing
+  backupAndWrite(configPath, JSON.stringify(doc, null, 2))
+  return { ok: true, path: configPath, injected }
+}
+
 /** TOML 文档：codex 风格 model_provider 表（幂等替换我们管理的段） */
 export function mergeTomlProvider(configPath, { model }) {
   let toml = ''
   try { toml = fs.readFileSync(configPath, 'utf-8') } catch {}
-  if (fs.existsSync(configPath)) fs.copyFileSync(configPath, configPath + '.openharness.bak')
+  if (isFile(configPath)) fs.copyFileSync(configPath, configPath + '.openharness.bak')
   toml = toml.replace(/\[model_providers\.openharness\][\s\S]*?(?=\n\[|$)/g, '')
   toml = toml.replace(/^model_provider\s*=.*$/gm, '')
   toml = toml.replace(/^model\s*=.*$/gm, '')

@@ -8,8 +8,9 @@ const servers = ref([])
 const harnesses = ref([])
 const visible = ref(false)
 const editing = ref(null)
-const form = ref({ name: '', transport: 'stdio', command: '', args: [], url: '' })
+const form = ref({ name: '', transport: 'stdio', command: '', args: [], url: '', auth: { mode: 'none', name: '', key: '' } })
 const argText = ref('')
+const envText = ref('')
 
 const injectVisible = ref(false)
 const injectServers = ref([])
@@ -24,16 +25,50 @@ async function load() {
 
 function openAdd() {
   editing.value = null
-  form.value = { name: '', transport: 'stdio', command: '', args: [], url: '' }
+  form.value = { name: '', transport: 'stdio', command: '', args: [], url: '', auth: { mode: 'none', name: '', key: '' } }
   argText.value = ''
+  envText.value = ''
   visible.value = true
 }
 
 function openEdit(s) {
   editing.value = s
-  form.value = JSON.parse(JSON.stringify(s))
+  const f = JSON.parse(JSON.stringify(s))
+  // 旧记录（无结构化 auth）：从 URL 里把 key/token 参数迁回表单，便于统一编辑
+  if (f.transport === 'http' && !f.auth) {
+    f.auth = { mode: 'none', name: '', key: '' }
+    try {
+      const u = new URL(f.url)
+      for (const pn of ['key', 'token', 'api_key', 'apiKey']) {
+        const kv = u.searchParams.get(pn)
+        if (kv) {
+          f.auth = { mode: 'query', name: pn, key: kv }
+          u.searchParams.delete(pn)
+          f.url = u.toString()
+          break
+        }
+      }
+    } catch {}
+    if (f.headers?.Authorization?.startsWith('Bearer ')) {
+      f.auth = { mode: 'bearer', name: '', key: f.headers.Authorization.slice(7) }
+    }
+  }
+  f.auth = f.auth || { mode: 'none', name: '', key: '' }
+  form.value = f
   argText.value = (s.args || []).join('\n')
+  envText.value = Object.entries(s.env || {}).map(([k, v]) => `${k}=${v}`).join('\n')
   visible.value = true
+}
+
+function parseEnvText(text) {
+  const env = {}
+  for (const line of (text || '').split('\n')) {
+    const t = line.trim()
+    if (!t || !t.includes('=')) continue
+    const i = t.indexOf('=')
+    env[t.slice(0, i).trim()] = t.slice(i + 1).trim()
+  }
+  return env
 }
 
 async function save() {
@@ -49,10 +84,35 @@ async function save() {
     ElMessage.warning('请填写 URL')
     return
   }
-  const server = {
-    ...form.value,
-    args: argText.value.split('\n').map((s) => s.trim()).filter(Boolean),
-    id: editing.value?.id || `mcp-${Date.now()}`
+  const auth = form.value.auth || { mode: 'none', name: '', key: '' }
+  if (auth.mode !== 'none' && !auth.key.trim()) {
+    ElMessage.warning('已选择鉴权方式，请填写 Key / Token')
+    return
+  }
+  if (auth.mode === 'query' && !auth.name.trim()) {
+    ElMessage.warning('URL 参数模式需要填写参数名')
+    return
+  }
+  if (auth.mode === 'header' && !auth.name.trim()) {
+    ElMessage.warning('自定义请求头模式需要填写头名')
+    return
+  }
+  const base = {
+    id: editing.value?.id || `mcp-${Date.now()}`,
+    name: form.value.name,
+    transport: form.value.transport,
+    auth: { mode: auth.mode, name: (auth.name || '').trim(), key: auth.key.trim() }
+  }
+  let server
+  if (form.value.transport === 'stdio') {
+    server = {
+      ...base,
+      command: form.value.command,
+      args: argText.value.split('\n').map((s) => s.trim()).filter(Boolean),
+      env: parseEnvText(envText.value)
+    }
+  } else {
+    server = { ...base, url: form.value.url.trim() }
   }
   servers.value = await api.mcpSave(server)
   visible.value = false
@@ -127,6 +187,9 @@ onMounted(load)
           </div>
           <span class="m-name">{{ s.name }}</span>
           <el-tag size="small" effect="plain">{{ s.transport === 'http' ? 'HTTP' : 'STDIO' }}</el-tag>
+          <el-tag v-if="s.auth?.mode && s.auth.mode !== 'none'" size="small" type="success" effect="plain">
+            {{ s.auth.mode === 'query' ? `URL参数:${s.auth.name || 'key'}` : s.auth.mode === 'bearer' ? 'Bearer 头' : `头:${s.auth.name || 'X-API-Key'}` }}
+          </el-tag>
         </div>
         <div class="m-cmd">
           <template v-if="s.transport === 'http'">{{ s.url }}</template>
@@ -157,10 +220,32 @@ onMounted(load)
           <el-form-item label="参数">
             <el-input v-model="argText" type="textarea" :rows="3" placeholder="每行一个参数，如：&#10;-y&#10;@modelcontextprotocol/server-filesystem&#10;E:\some\path" />
           </el-form-item>
+          <el-form-item label="环境变量">
+            <el-input v-model="envText" type="textarea" :rows="3" placeholder="每行一个，如：&#10;API_KEY=sk-xxx&#10;DEBUG=true" />
+          </el-form-item>
         </template>
-        <el-form-item v-else label="URL" required>
-          <el-input v-model="form.url" placeholder="http://localhost:3000/mcp" />
-        </el-form-item>
+        <template v-else>
+          <el-form-item label="URL" required>
+            <el-input v-model="form.url" placeholder="如：https://mcp.example.com/mcp/sse" />
+          </el-form-item>
+          <el-form-item label="鉴权方式">
+            <el-select v-model="form.auth.mode" style="width: 100%">
+              <el-option label="无需鉴权" value="none" />
+              <el-option label="URL 参数（?key=…，参数名可配）" value="query" />
+              <el-option label="Authorization: Bearer 头" value="bearer" />
+              <el-option label="自定义请求头（X-API-Key 等）" value="header" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="form.auth.mode === 'query'" label="参数名">
+            <el-input v-model="form.auth.name" placeholder="URL 参数名，默认 key（服务常用：key / token / api_key）" />
+          </el-form-item>
+          <el-form-item v-if="form.auth.mode === 'header'" label="头名">
+            <el-input v-model="form.auth.name" placeholder="请求头名称，默认 X-API-Key" />
+          </el-form-item>
+          <el-form-item v-if="form.auth.mode !== 'none'" label="Key / Token" required>
+            <el-input v-model="form.auth.key" show-password placeholder="服务申请的 Token / API Key" />
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="visible = false">取消</el-button>

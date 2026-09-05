@@ -18,6 +18,9 @@ const SW_RESTORE = 9
 // 多开：harnessId -> { hwnd, origStyle }；activeId 为当前显示的那个
 const attached = new Map()
 let activeId = null
+// 工作台路由是否可见：非工作台页面上（首页/MCP 等）嵌入窗口必须保持停靠，
+// focus 恢复时不能把停靠的窗口拉回容器（会盖在当前页面上）
+let workspaceVisible = true
 
 // 最新打开请求：慢冷启动完成时只有仍是最新目标才能激活/显示，过期结果仅登记保持隐藏
 let latestOpenId = null
@@ -223,9 +226,24 @@ function waitForPort(port, maxWaitMs = 40000) {
 const webServices = new Map()
 
 function activateWeb(harnessId) {
+  workspaceVisible = true
   for (const [, a] of attached) parkOffscreen(a)
   setClipRect(null)
   activeId = harnessId
+}
+
+/**
+ * PTY/web 型标签激活前调用：把所有已附着的原生窗口停靠到屏幕外。
+ * 原生子窗口永远浮在 HTML 之上，不挪开就会盖住 xterm 终端/iframe，
+ * 表现为"明明切到了新标签，界面还停在旧 harness"。
+ */
+export function parkForNonNative(id) {
+  workspaceVisible = true
+  for (const [aid, a] of attached) {
+    if (aid !== id) parkOffscreen(a)
+  }
+  if (activeId && activeId !== id) activeId = null
+  setClipRect(null)
 }
 
 /**
@@ -334,7 +352,9 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       if (!r.ok) return r
       pid = r.pid
       const deadline = Date.now() + 45000
-      while (Date.now() < deadline && isLatest(harnessId)) {
+      // 注意：用户切出工作台（isLatest=false）不能中止附着——要继续在后台完成，
+      // 完成后停靠屏幕外等用户切回；否则应用进程悬空、切回工作台后标签丢失
+      while (Date.now() < deadline) {
         hwnd = await findWindowByNamesFast(processHints, 12000, 250)
         if (!hwnd) break
         // 拿到主窗口后立刻停钩子：它的停靠动作会挪走刚吸附的窗口
@@ -346,6 +366,10 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
           continue
         }
         hwnd = attach.hwnd
+        // 用户已离开工作台：立即停靠屏幕外，别让窗口在稳定验证期间挡在其他页面上
+        if (!isLatest(harnessId)) {
+          parkOffscreen(attached.get(harnessId))
+        }
         // 稳定验证：若应用自毁重建了窗口，此间 hwnd 会失效
         let stable = true
         for (let i = 0; i < 3; i++) {
@@ -416,8 +440,8 @@ async function attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCo
   await bridge.send('setparent', hwnd, parentHwnd)
   await bridge.send('style', hwnd, toInt32(origStyle & ~STYLE_STRIP))
 
-  // 附着瞬间立即定位，避免旧位置/旧尺寸闪现
-  if (initialRect) {
+  // 附着瞬间立即定位（仅当用户仍在等待此目标；已离开的窗口保持屏幕外）
+  if (initialRect && isLatest(harnessId)) {
     bridge.fire(
       'move', hwnd,
       Math.round(initialRect.x), Math.round(initialRect.y),
@@ -432,6 +456,7 @@ async function attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCo
 /** 激活某个已附着窗口：显示它、其余停靠到屏幕外，并可顺手贴合矩形 */
 export function activate(harnessId, rect) {
   if (!attached.has(harnessId)) return
+  workspaceVisible = true
   for (const [id, a] of attached) {
     if (id !== harnessId) parkOffscreen(a)
   }
@@ -587,7 +612,7 @@ export async function release(harnessId) {
   }
 }
 
-/** 关闭指定（默认当前激活的）嵌入：先脱离再杀掉应用进程树 */
+/** 关闭指定（默认当前激活的）嵌入：静默杀掉应用进程树并清理登记，全程无窗口闪现 */
 export async function closeAndKill(harnessId) {
   const id = harnessId || activeId
   // Web 型 harness：杀服务进程树（按端口反查 PID），并结束 ConPTY 隐藏宿主。
@@ -600,15 +625,30 @@ export async function closeAndKill(harnessId) {
     pty.closeSilent(id)
     return
   }
+  // PTY 型（claude code / codex 等内置终端）：结束会话并杀掉进程树，
+  // 否则关闭标签后 claude 等进程永久残留
+  if (pty.ids().includes(id)) {
+    pty.close(id)
+    if (activeId === id) activeId = null
+    return
+  }
   const a = attached.get(id)
   if (!a) return
   // PID 必须在脱离前查：脱离后 hwnd 仍有效但窗口已变独立窗口
   const pidLine = await bridge.send('pidof', a.hwnd)
   const pid = /^pid:(\d+)$/.exec(pidLine || '')?.[1]
-  await release(id)
+  // 静默关闭：先杀进程，再做清理。绝不能走 release()——它会把窗口摆回屏幕并
+  // SW_RESTORE「转独立窗口」，进程还没死透就闪出一个独立弹窗。
+  // 也不要 setparent(0)：脱离会让窗口在进程死亡前的瞬间变回独立窗口；
+  // 保持子窗口状态随进程直接销毁，全程无感
   if (pid) {
-    // /T 杀进程树（Electron/Chromium 多进程），/F 强制；后台执行
     exec('taskkill', ['/T', '/F', '/PID', pid]).catch(() => {})
+  }
+  bridge.fire('clearrgn', a.hwnd)
+  attached.delete(id)
+  if (activeId === id) {
+    activeId = null
+    setClipRect(null)
   }
 }
 
@@ -629,7 +669,11 @@ export async function releaseAll() {
 
 /** 停靠全部附着窗口（离开工作台路由时调用；先停看门狗再停靠，否则看门狗会把停靠的窗口拉回容器） */
 export function hideAll() {
+  workspaceVisible = false
   setClipRect(null)
+  // 离开工作台 = 未完成的冷启动附着请求全部过期：附着完成后必须停靠屏幕外，
+  // 否则窗口会按容器矩形激活显示，直接盖在用户切过去的其他页面上
+  latestOpenId = null
   for (const [, a] of attached) parkOffscreen(a)
 }
 
@@ -649,6 +693,31 @@ export function showActive() {
   }
   a.parked = false
   bridge.fire('show', a.hwnd, SW_SHOW)
+}
+
+/**
+ * 主窗口恢复/重新聚焦时调用：Windows 最小化 OpenHarness 会一并隐藏子窗口，
+ * 恢复时不会自动重新显示——子窗口停留在隐藏态，看起来就是"卡死"。
+ * 这里主动显示激活的子窗口并重新贴合容器矩形。
+ */
+export function reassertActive() {
+  // 非工作台页面（首页/MCP 等）上嵌入窗口必须保持停靠：
+  // focus 事件在用户从其他应用切回时也会触发，此时拉回容器会盖住当前页面
+  if (!workspaceVisible) return
+  const a = attached.get(activeId)
+  if (!a) return
+  const rect = allowedRect || a.lastRect
+  if (rect) {
+    a.lastRect = rect
+    bridge.fire(
+      'move', a.hwnd,
+      Math.round(rect.x), Math.round(rect.y),
+      Math.round(rect.width), Math.round(rect.height)
+    )
+  }
+  a.parked = false
+  bridge.fire('show', a.hwnd, SW_SHOW)
+  if (allowedRect) applyRgn(a, allowedRect, allowedRect)
 }
 
 export function status() {

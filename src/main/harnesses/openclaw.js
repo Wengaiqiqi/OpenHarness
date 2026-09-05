@@ -9,6 +9,7 @@ const openclaw = {
   color: '#a78bfa',
   icon: 'icons/openclaw.svg',
   cli: 'openclaw',
+  usePty: true,
   processHints: ['openclaw'],
   exeCandidates: [`${USERPROFILE}\\.openclaw\\bin\\openclaw.cmd`, `${APPDATA}\\npm\\openclaw.cmd`],
   configCandidates: [`${USERPROFILE}\\.openclaw\\openclaw.json`, `${USERPROFILE}\\.openclaw\\clawdbot.json`],

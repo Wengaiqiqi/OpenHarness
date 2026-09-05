@@ -95,8 +95,11 @@ function closeTab(t) {
 async function addTab(h) {
   addVisible.value = false
   if (tabs.value.some((t) => t.id === h.id)) return
-  tabs.value.push({ id: h.id, name: h.name, color: h.color })
-  await activateTab(h)
+  const tab = { id: h.id, name: h.name, color: h.color }
+  tabs.value.push(tab)
+  // 必须传数组里的响应式代理：原始对象上设 mode 不会触发渲染，
+  // 终端组件永远挂不出来（表现为"切走再切回才刷新"）
+  await activateTab(tabs.value[tabs.value.length - 1])
 }
 
 /** 工具条"重新扫描"：重新检测本机 harness 并刷新可开列表 */

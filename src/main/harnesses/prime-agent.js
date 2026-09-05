@@ -9,6 +9,7 @@ const prime_agent = {
   color: '#14b8a6',
   icon: 'https://github.com/PrimeIntellect-ai.png',
   cli: 'prime',
+  usePty: true,
   processHints: [],
   configCandidates: [`${USERPROFILE}\\.prime\\agent\\models.json`],
 

@@ -9,6 +9,7 @@ const kimi_code = {
   color: '#111111',
   icon: 'https://cdn.simpleicons.org/kimi/111111',
   cli: 'kimi',
+  usePty: true,
   processHints: [],
   configCandidates: [`${USERPROFILE}\\.kimi-code\\config.toml`],
 

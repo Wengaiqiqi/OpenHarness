@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   harnessInjectMcp: (id, servers) => invoke('harness:injectMcp', id, servers),
   harnessOpenConfig: (id) => invoke('harness:openConfig', id),
   harnessConfigureModel: (id, payload) => invoke('harness:configureModel', id, payload),
+  modelConfigHistory: (id) => invoke('model-config:history', id),
   proxyStatus: () => invoke('proxy:status'),
 
   /* MCP */

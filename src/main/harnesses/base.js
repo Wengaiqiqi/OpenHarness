@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, execFile as rawExecFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { applyAuth } from './agent-config'
 
 const execFile = promisify(rawExecFile)
 
@@ -55,10 +56,11 @@ function injectMcpIntoFile(configPath, servers, key = 'mcpServers') {
   return { ok: true, path: configPath, injected }
 }
 
-/** 把 OpenHarness 注册的 MCP server 转为 stdio 启动项 */
+/** 把 OpenHarness 注册的 MCP server 转为 stdio 启动项（http 类型合成鉴权到 URL/头） */
 function buildStdioEntry(server) {
   if (server.transport === 'http') {
-    return { type: 'http', url: server.url, ...(server.headers || {}) }
+    const { url, headers } = applyAuth(server)
+    return { type: 'http', url, ...(Object.keys(headers).length ? { headers } : {}) }
   }
   if (!server.command) return null
   const args = (server.args || []).filter(Boolean)

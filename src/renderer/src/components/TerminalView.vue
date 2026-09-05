@@ -79,6 +79,13 @@ onMounted(async () => {
   observer = new ResizeObserver(scheduleResize)
   observer.observe(host.value)
   resize()
+  // 首挂可能早于布局/首帧完成：等两帧后再贴合并强制刷新一次字形，
+  // 避免极端时序下"行有结构而无字形"，用户看到空白终端
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!term) return
+    resize()
+    term.refresh(0, term.rows - 1)
+  }))
 })
 
 onBeforeUnmount(() => {
