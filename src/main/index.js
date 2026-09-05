@@ -140,15 +140,18 @@ ipcMain.handle('db:set', (_e, key, value) => {
 
 /* ---------------- IPC: Harness 管理 ---------------- */
 ipcMain.handle('harness:list', async () => {
-  const results = []
-  for (const adapter of harnessRegistry.all()) {
-    try {
-      const info = await adapter.detect()
-      results.push({ ...info, id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon })
-    } catch (err) {
-      results.push({ id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon, installed: false, error: String(err) })
-    }
-  }
+  // 并行检测：串行 16 个 detect（每个含 where.exe 探测）要数秒，并行后几百毫秒，
+  // 否则工作台首次进入会卡在等待上
+  const results = await Promise.all(
+    harnessRegistry.all().map(async (adapter) => {
+      try {
+        const info = await adapter.detect()
+        return { ...info, id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon }
+      } catch (err) {
+        return { id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon, installed: false, error: String(err) }
+      }
+    })
+  )
   return results
 })
 

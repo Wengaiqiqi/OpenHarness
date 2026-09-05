@@ -22,6 +22,16 @@ const codex = {
   async detect() {
     const exe = firstExists(this.exeCandidates)
     const configPath = firstExists(this.configCandidates)
+    // 命令自愈：不同环境装的是 codex 或 opencodex（npm 包名不同），
+    // detect 在每次打开前都会跑，趁机把 cli 修正为真实可用的命令
+    if (!(await commandExists(this.cli))) {
+      for (const alt of ['codex', 'opencodex']) {
+        if (alt !== this.cli && (await commandExists(alt))) {
+          this.cli = alt
+          break
+        }
+      }
+    }
     return {
       installed: !!(exe || configPath || exists(`${USERPROFILE}\\.codex`)),
       exePath: exe,

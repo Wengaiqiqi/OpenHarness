@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { SwitchButton, Position, Close, Monitor, Plus, Refresh } from '@element-plus/icons-vue'
 import TerminalView from '@/components/TerminalView.vue'
+import { iconFallback } from '@/icon-fallback'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,17 +77,18 @@ function activateTab(t) {
   return run()
 }
 
-/** 关闭标签 = 释放该嵌入，应用本身转为独立窗口继续运行 */
-async function closeTab(t) {
-  await api.embedClose(t.id)
+/** 关闭标签：先切 UI 再后台杀进程（杀进程可能耗时数秒，绝不让 UI 等待） */
+function closeTab(t) {
   const idx = tabs.value.findIndex((x) => x.id === t.id)
-  if (idx >= 0) tabs.value.splice(idx, 1)
+  if (idx < 0) return
+  tabs.value.splice(idx, 1)
   if (activeTabId.value === t.id) {
     activeTabId.value = null
     embedOk.value = false
     const next = tabs.value[idx] || tabs.value[idx - 1]
-    if (next) await activateTab(next)
+    if (next) activateTab(next)
   }
+  api.embedClose(t.id).catch(() => {})
 }
 
 /** "+" 下拉选择后新开一个嵌入标签 */
@@ -108,24 +110,26 @@ async function rescan() {
   }
 }
 
-async function toStandalone() {
+/** 转为独立窗口：先切 UI，脱离放后台 */
+function toStandalone() {
   const t = activeTab.value
   if (!t) return
-  await api.embedRelease(t.id)
   const idx = tabs.value.findIndex((x) => x.id === t.id)
   if (idx >= 0) tabs.value.splice(idx, 1)
   if (activeTabId.value === t.id) {
     activeTabId.value = null
     embedOk.value = false
     const next = tabs.value[idx] || tabs.value[idx - 1]
-    if (next) await activateTab(next)
+    if (next) activateTab(next)
   }
+  api.embedRelease(t.id).catch(() => {})
   ElMessage.success(`「${t.name}」已转为独立窗口运行`)
 }
 
-async function releaseAndBack() {
-  await api.embedReleaseAll()
+/** 释放并返回：先导航，释放放后台（DeepSeek 等 web 型要杀服务进程树，可能耗时数秒） */
+function releaseAndBack() {
   router.replace('/harness')
+  api.embedReleaseAll().catch(() => {})
 }
 
 onMounted(async () => {
@@ -183,7 +187,7 @@ onBeforeUnmount(() => {
           @click="activateTab(t)"
         >
           <span class="ws-dot" :style="{ background: t.color }" />
-          <img v-if="tabIcon(t.id)" :src="tabIcon(t.id)" class="ws-tab-icon" alt="" />
+          <img v-if="tabIcon(t.id)" :src="tabIcon(t.id)" class="ws-tab-icon" alt="" @error="iconFallback($event, t.name, t.color)" />
           <span class="ws-tab-name">{{ t.name }}</span>
           <el-icon class="ws-tab-close" @click.stop="closeTab(t)"><Close /></el-icon>
         </div>
@@ -209,7 +213,7 @@ onBeforeUnmount(() => {
           class="ws-add-bar-item"
           @click="addTab(h)"
         >
-          <img v-if="h.icon" :src="h.icon" class="ws-tab-icon" alt="" />
+          <img v-if="h.icon" :src="h.icon" class="ws-tab-icon" alt="" @error="iconFallback($event, h.name, h.color)" />
           <span v-else class="ws-add-dot" :style="{ background: h.color }" />
           {{ h.name }}
         </button>

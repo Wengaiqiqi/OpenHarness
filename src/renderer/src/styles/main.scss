@@ -141,25 +141,22 @@ textarea {
   outline-offset: 2px;
 }
 
+/* 全局隐藏滚动条：桌面应用靠滚轮/触控滚动，右侧不留长条（滚动能力保留） */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 0;
+  height: 0;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--oh-border-strong);
-  border-radius: 6px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-
-  &:hover {
-    background-color: var(--oh-text-dim);
-  }
+  background: transparent;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+* {
+  scrollbar-width: none;
 }
 
 /* ---- shared primitives ---- */

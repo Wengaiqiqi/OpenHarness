@@ -65,7 +65,12 @@ function buildStdioEntry(server) {
   return { command: server.command, args, ...(server.env ? { env: server.env } : {}) }
 }
 
-/** 启动 exe（分离进程） */
+/**
+ * 启动 exe（分离进程）。
+ * 注意：绝不能加 windowsHide —— 它会附带 STARTF SW_HIDE 提示，托盘优先的 Electron 应用
+ * （如 OpenCode Desktop）会据此静默启动且不创建任何窗口，导致无窗口可吸附。
+ * 冷启动的闪窗防护由 embed 的 WinEventHook 看门钩子负责（窗口创建瞬间移出屏幕并隐藏）。
+ */
 function launchExe(exePath, args = []) {
   if (!exists(exePath)) return { ok: false, message: `未找到可执行文件: ${exePath}` }
   try {
@@ -82,9 +87,11 @@ function launchExe(exePath, args = []) {
 
 /**
  * 启动 CLI 命令。写临时 .bat 后以 conhost 显式宿主（绕开 wt 接管、附着后色彩丢失），返回 hostPid 供定位 cmd 子窗口
- * （Web 型 harness 起后台服务改用 pty.openSilent：ConPTY 虚拟终端能隐藏自拉起新控制台窗口的进程）
+ * @param {boolean} [opts.silent] 静默启动（STARTF SW_HIDE：控制台窗口创建即隐藏但真实存在，
+ *   由 embed 找到隐藏窗口附着进容器后再显示 —— 全程零弹窗）。
+ *   （Web 型 harness 起后台服务改用 pty.openSilent：ConPTY 虚拟终端能隐藏自拉起新控制台窗口的进程）
  */
-function launchCliConsole(title, command) {
+function launchCliConsole(title, command, opts = {}) {
   try {
     const env = { ...process.env }
     delete env.ELECTRON_RENDERER_URL
@@ -92,8 +99,14 @@ function launchCliConsole(title, command) {
     env.COLORTERM = 'truecolor'
     env.TERM = 'xterm-256color'
     const bat = path.join(env.TEMP || process.cwd(), title + '.bat')
+    // silent 模式也写 title：embed 靠 ConsoleWindowClass + 标题定位隐藏窗口
     const lines = ['@echo off', 'chcp 65001 >nul', 'title ' + title, command, '']
     fs.writeFileSync(bat, lines.join(String.fromCharCode(13, 10)))
+    if (opts.silent) {
+      const child = spawn('conhost.exe', ['cmd', '/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, env })
+      child.unref()
+      return { ok: true, hostPid: child.pid }
+    }
     const child = spawn('conhost.exe', ['cmd', '/c', bat], { detached: true, stdio: 'ignore', env })
     child.unref()
     return { ok: true, hostPid: child.pid }

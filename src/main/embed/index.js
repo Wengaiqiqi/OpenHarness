@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import net from 'node:net'
 import bridge from './win32-bridge'
@@ -34,39 +34,134 @@ function clearLatestIf(id) {
   if (latestOpenId === id) latestOpenId = null
 }
 
-function runPS(script) {
-  return exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-    windowsHide: true,
-    timeout: 45000
-  }).then((r) => r.stdout.trim()).catch(() => '')
-}
-
-/** 按进程名查找主窗口句柄 */
-export async function findWindowByNames(processHints = []) {
-  if (!processHints.length) return 0
-  const list = processHints.map((n) => `'${n.replace(/'/g, "''")}'`).join(',')
-  const script = [
-    "$ErrorActionPreference='SilentlyContinue'",
-    `$names = @(${list})`,
-    '$w = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $names -contains $_.ProcessName } | Select-Object -First 1',
-    'if ($w) { Write-Output $w.MainWindowHandle } else { Write-Output 0 }'
-  ].join('\n')
-  const out = await runPS(script)
-  const n = parseInt(out, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
-}
-
-/** 按窗口标题轮询查找主窗口句柄（CLI 控制台窗口） */
-export async function findWindowByTitle(title, maxWaitMs = 20000) {
+/**
+ * 查找控制台窗口：优先按标题子串（findcon），TUI 程序会改掉控制台标题导致竞态，
+ * 故同时按 hostPid 进程树匹配（findconpid）兜底 —— 两者任一命中即返回
+ */
+async function findConsoleWindow(title, maxWaitMs = 15000, hostPid = 0) {
   const deadline = Date.now() + maxWaitMs
   while (Date.now() < deadline) {
-    const out = await bridge.send('findbytitle', title)
+    const out = await bridge.send('findcon', title)
+    const m = /^con:(\d+):(\d+)$/.exec(out || '')
+    if (m && parseInt(m[1], 10) > 0) return parseInt(m[1], 10)
+    if (hostPid) {
+      const out2 = await bridge.send('findconpid', String(hostPid))
+      const m2 = /^hwnd:(\d+)$/.exec(out2 || '')
+      if (m2 && parseInt(m2[1], 10) > 0) return parseInt(m2[1], 10)
+    }
+    await sleep(400)
+  }
+  return 0
+}
+
+/**
+ * 按进程名查找主窗口（桥 findnames：EnumWindows，能找到隐藏窗口），
+ * 用于已运行实例检测与冷启动隐藏窗口的高频轮询
+ */
+async function findWindowByNamesFast(processHints = [], maxWaitMs = 20000, tickMs = 250) {
+  if (!processHints.length) return 0
+  const csv = processHints.map((n) => String(n).replace(/['",|]/g, '')).filter(Boolean).join(',')
+  if (!csv) return 0
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    const out = await bridge.send('findnames', csv)
     const m = /^hwnd:(\d+)$/.exec(out || '')
     const n = parseInt(m?.[1], 10)
     if (Number.isFinite(n) && n > 0) return n
-    await sleep(500)
+    await sleep(tickMs)
   }
   return 0
+}
+
+// WinEventHook 看门钩子：桌面应用（Electron/Chromium 系）冷启动时会无视 STARTF SW_HIDE 强制
+// ShowWindow()，无法预先隐藏；用 OUTOFCONTEXT 钩子在窗口创建/显示事件瞬间将其移出屏幕并隐藏，
+// 之后走常规附着流程在容器内显示，实现接近零闪窗。独立短命进程，超时自动退出。
+const WATCHER_PS = `
+$ErrorActionPreference = 'SilentlyContinue'
+$def = @"
+using System;
+using System.Runtime.InteropServices;
+public class OHWatch {
+  public delegate void WinEventProc(IntPtr hHook, uint ev, IntPtr hwnd, long idObject, long idChild, uint thread, uint time);
+  [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventProc cb, uint pid, uint tid, uint flags);
+  [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hHook);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int ht, bool r);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+}
+"@
+Add-Type -TypeDefinition $def
+$script:names = @(__NAMES__)
+$script:hidden = @{}
+$cb = [OHWatch+WinEventProc]{
+  param($hHook, $ev, $hwnd, $idObject, $idChild, $thread, $time)
+  try {
+    if ($idObject -ne 0 -or $hwnd -eq [IntPtr]::Zero) { return }
+    if ($ev -ne 0x8000 -and $ev -ne 0x8002) { return }
+    $wpid = 0
+    [OHWatch]::GetWindowThreadProcessId($hwnd, [ref]$wpid) | Out-Null
+    if ($wpid -eq 0) { return }
+    $wp = Get-Process -Id $wpid -ErrorAction SilentlyContinue
+    if (-not $wp -or $script:names -notcontains $wp.ProcessName) { return }
+    $key = [string]$hwnd
+    if ($script:hidden.ContainsKey($key)) { return }
+    $script:hidden[$key] = 1
+    # 只挪出屏幕（保留原尺寸），绝不 SW_HIDE：托盘优先的 Electron 应用（OpenCode 等）
+    # 检测到窗口被隐藏会自行销毁窗口转入托盘，之后无窗口可吸附。
+    # 挪出屏幕对用户同样不可见，但窗口保持「已显示」状态，吸附后原样进容器。
+    $r = New-Object OHWatch+RECT
+    [OHWatch]::GetWindowRect($hwnd, [ref]$r) | Out-Null
+    [OHWatch]::MoveWindow($hwnd, -32000, -32000, ([int]$r.Right - [int]$r.Left), ([int]$r.Bottom - [int]$r.Top), $false) | Out-Null
+  } catch {}
+}
+$g = [OHWatch]::SetWinEventHook(0x8000, 0x8003, [IntPtr]::Zero, $cb, 0, 0, 2)
+Add-Type -AssemblyName System.Windows.Forms
+$deadline = [DateTime]::UtcNow.AddMilliseconds(25000)
+while ([DateTime]::UtcNow -lt $deadline) {
+  [System.Windows.Forms.Application]::DoEvents()
+  Start-Sleep -Milliseconds 25
+}
+if ($g -ne [IntPtr]::Zero) { [OHWatch]::UnhookWinEvent($g) | Out-Null }
+`
+
+let watcherTs = 0
+let watcherProc = null
+
+/** 终止看门钩子：附着流程拿到主窗口后必须立刻停，否则它会 HID 掉刚吸附/刚显示的窗口（HID 去重永不恢复） */
+function stopWatcher() {
+  if (watcherProc) {
+    try { watcherProc.kill() } catch {}
+    watcherProc = null
+  }
+}
+
+/**
+ * 启动窗口创建看门钩子（15 秒内不叠加多个；钩子进程 25 秒后自行退出）。
+ * 必须走 -File：-Command 传递多行 here-string 脚本时 PowerShell 会静默提前退出（无 stderr、code 0），
+ * 钩子从未安装过 —— 这是看门钩子一度完全失效的根因。
+ */
+function startWatcher(processHints = [], force = false) {
+  const names = (processHints || []).map((n) => String(n).replace(/['",]/g, '')).filter(Boolean)
+  if (!names.length) return
+  const now = Date.now()
+  if (!force && now - watcherTs < 15000) return
+  watcherTs = now
+  const script = WATCHER_PS.replace('__NAMES__', names.map((n) => `'${n}'`).join(','))
+  try {
+    const scriptPath = path.join(process.env.TEMP || process.cwd(), 'oh-watcher.ps1')
+    fs.writeFileSync(scriptPath, script, 'utf-8')
+    // 不能用 detached：DETACHED_PROCESS 下 PowerShell 完全没有控制台会静默退出/挂起，
+    // 钩子永远装不上。windowsHide（CREATE_NO_WINDOW，隐藏控制台）是已被验证可用的组合
+    const w = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    w.on('error', () => {})
+    w.unref()
+    watcherProc = w
+  } catch {}
 }
 
 /** 按宿主 PID 找其子进程的主窗口句柄（conhost -> cmd 控制台窗口） */
@@ -77,33 +172,6 @@ export async function findChildWindow(hostPid, maxWaitMs = 20000) {
     const m = /^hwnd:(\d+)$/.exec(out || '')
     const n = parseInt(m?.[1], 10)
     if (Number.isFinite(n) && n > 0) return n
-    await sleep(500)
-  }
-  return 0
-}
-
-/** 按已启动的 PID 轮询主窗口句柄（应用冷启动需要时间） */
-export async function findWindowByPid(pid, maxWaitMs = 20000) {
-  if (!pid) return 0
-  const script = `
-$ErrorActionPreference='SilentlyContinue'
-for ($i=0; $i -lt ${Math.ceil(maxWaitMs / 500)}; $i++) {
-  $h = (Get-Process -Id ${pid}).MainWindowHandle
-  if ($h -ne 0) { Write-Output $h; break }
-  Start-Sleep -Milliseconds 500
-}
-`
-  const out = await runPS(script)
-  const n = parseInt(out, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
-}
-
-/** 按进程名轮询主窗口句柄（Electron 启动器会退出并把窗口交给子进程，pid 轮询不可靠） */
-export async function findWindowByNamesPoll(processHints = [], maxWaitMs = 20000) {
-  const deadline = Date.now() + maxWaitMs
-  while (Date.now() < deadline) {
-    const hwnd = await findWindowByNames(processHints)
-    if (hwnd) return hwnd
     await sleep(500)
   }
   return 0
@@ -155,9 +223,21 @@ function waitForPort(port, maxWaitMs = 40000) {
 const webServices = new Map()
 
 function activateWeb(harnessId) {
-  for (const [, a] of attached) bridge.fire('show', a.hwnd, SW_HIDE)
+  for (const [, a] of attached) parkOffscreen(a)
   setClipRect(null)
   activeId = harnessId
+}
+
+/**
+ * 停靠到屏幕外（窗口保持「已显示」状态）。
+ * 绝不能对 GUI 窗口用 SW_HIDE：托盘优先的 Electron 应用（OpenCode 等）检测到窗口被隐藏
+ * 会自行销毁窗口转入托盘，之后无窗口可吸附。挪出屏幕对用户同样不可见且无此风险。
+ */
+function parkOffscreen(a) {
+  const w = a.lastRect ? Math.round(a.lastRect.width) : 800
+  const h = a.lastRect ? Math.round(a.lastRect.height) : 600
+  bridge.fire('move', a.hwnd, -32000, -32000, w, h)
+  a.parked = true
 }
 
 /**
@@ -184,6 +264,15 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
     }
     activate(harnessId, initialRect)
     return { ok: true, hwnd: a.hwnd, reactivated: true }
+  }
+
+  // 冷启动前先停靠当前激活窗口：原生子窗口永远浮在 HTML 之上，
+  // 不挪开的话加载动画会被它盖住，用户看到的就是"旧界面卡住不动"。
+  // 同时停掉看门狗，否则它会把停靠的窗口拉回容器。
+  const prevActive = attached.get(activeId)
+  if (prevActive && activeId !== harnessId) {
+    parkOffscreen(prevActive)
+    setClipRect(null)
   }
 
   let pid = null
@@ -214,37 +303,105 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       if (isLatest(harnessId)) activateWeb(harnessId)
       return { ok: true, webUrl: `http://127.0.0.1:${port}`, serviceOnly: true }
     }
-    const launched = launchCliConsole(title, cli)
     coldStart = true
-    // 按 conhost 子进程 cmd 定位控制台窗口（标题会被 claude 等程序改掉，PID 链不受影响）
-    hwnd = await findChildWindow(launched.hostPid, 20000)
+    // 静默优先：conhost 以 STARTF SW_HIDE 启动，控制台窗口创建即隐藏，
+    // 找到隐藏窗口附着进容器后再显示 —— 全程零弹窗
+    let launched = launchCliConsole(title, cli, { silent: true })
+    if (launched.ok) {
+      hwnd = await findConsoleWindow(title, 15000, launched.hostPid)
+    }
+    // 兜底：静默路径不可用时回退可见控制台（旧行为，附着前短暂闪现）
     if (!hwnd) {
-      return { ok: false, message: `未能找到 ${cli} 的控制台窗口（命令可能未安装，可在终端直接运行 ${cli} 验证）` }
+      launched = launchCliConsole(title, cli)
+      if (!launched.ok) {
+        return { ok: false, message: `未能启动 ${cli}（命令可能未安装，可在终端直接运行 ${cli} 验证）` }
+      }
+      // 按 conhost 子进程 cmd 定位控制台窗口（标题会被 claude 等程序改掉，PID 链不受影响）
+      hwnd = await findChildWindow(launched.hostPid, 20000)
+      if (!hwnd) {
+        return { ok: false, message: `未能找到 ${cli} 的控制台窗口（命令可能未安装，可在终端直接运行 ${cli} 验证）` }
+      }
     }
   } else {
-    // 先找已运行的实例，找不到再冷启动
-    hwnd = await findWindowByNames(processHints)
+    // 先找已运行的实例（findnames 也能找到隐藏窗口，如最小化到托盘的应用）
+    hwnd = await findWindowByNamesFast(processHints, 2000, 500)
     if (!hwnd && exePath) {
+      // GUI 冷启动：Electron 应用（OpenCode 等）启动初期会自毁/重建主窗口，
+      // 一次附着可能落在短命窗口上。策略：布钩子停靠新窗口 → 找 → 附 → 验存活 →
+      // 死了就重找重附（预算内循环），直到窗口稳定为止。
+      startWatcher(processHints, true)
       const r = launchExe(exePath)
       if (!r.ok) return r
       pid = r.pid
-      coldStart = true
-      // Electron 启动器（如 Code.exe）会退出并把窗口交给真正的子进程，
-      // 所以 pid 轮询失败时退回按进程名轮询
-      hwnd = await findWindowByPid(pid, 10000)
-      if (!hwnd) hwnd = await findWindowByNamesPoll(processHints, 15000)
+      const deadline = Date.now() + 45000
+      while (Date.now() < deadline && isLatest(harnessId)) {
+        hwnd = await findWindowByNamesFast(processHints, 12000, 250)
+        if (!hwnd) break
+        // 拿到主窗口后立刻停钩子：它的停靠动作会挪走刚吸附的窗口
+        stopWatcher()
+        const attach = await attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCold: false })
+        if (!attach.ok) {
+          attached.delete(harnessId)
+          startWatcher(processHints, true)
+          continue
+        }
+        hwnd = attach.hwnd
+        // 稳定验证：若应用自毁重建了窗口，此间 hwnd 会失效
+        let stable = true
+        for (let i = 0; i < 3; i++) {
+          await sleep(900)
+          const m = /^chk:(\d+):/.exec((await bridge.send('chk', String(hwnd))) || '')
+          if (!m || m[1] !== '1') { stable = false; break }
+        }
+        if (stable) {
+          if (isLatest(harnessId)) {
+            activate(harnessId, initialRect)
+            bridge.fire('show', hwnd, SW_SHOW)
+          } else {
+            // 过期冷启动：停靠屏幕外，切回该标签时即时复用
+            parkOffscreen(attached.get(harnessId))
+          }
+          return { ok: true, hwnd, pid, launched: true }
+        }
+        // 窗口被应用自毁：清登记重来（重建的新窗口由钩子停靠在屏幕外）
+        attached.delete(harnessId)
+        startWatcher(processHints, true)
+      }
+      stopWatcher()
+      return { ok: false, message: '未能附着应用窗口（应用可能启动失败或窗口未就绪）' }
     }
     if (!hwnd) {
       return { ok: false, message: '未能找到应用窗口（应用可能启动失败或窗口尚未创建）' }
     }
   }
 
-  if (coldStart) {
-    // 冷启动：窗口一出现就隐藏，剥样式/附着/定位完成后再显示，
-    // 避免原窗口先闪现在屏幕上再被"吸"进来
+  const attach = await attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCold: coldStart, restore: !coldStart })
+  if (!attach.ok) {
+    return { ok: false, message: '附着应用窗口失败' }
+  }
+  hwnd = attach.hwnd
+  // 只有仍是最新打开目标时才激活/显示；过期冷启动登记后保持隐藏，切回时即时复用
+  if (isLatest(harnessId)) {
+    activate(harnessId, initialRect)
+    if (coldStart) {
+      // 冷启动窗口是隐藏着被附着的：定位完成后 RESTORE（清最小化态）再由 activate 的 SW_SHOW 显示
+      bridge.fire('show', hwnd, SW_RESTORE)
+    }
+  } else {
+    // 过期附着：停靠屏幕外（SW_HIDE 会触发托盘应用自毁窗口）
+    parkOffscreen(attached.get(harnessId))
+  }
+  return { ok: true, hwnd, pid, launched: !!pid }
+}
+
+/**
+ * 执行窗口附着：视需要先隐藏（控制台）/还原（已运行实例），剥样式、设父窗口、贴容器矩形并登记
+ */
+async function attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCold, restore }) {
+  if (hideOnCold) {
     bridge.fire('show', hwnd, SW_HIDE)
     await sleep(150)
-  } else {
+  } else if (restore) {
     // 已运行实例：先还原最大化/最小化状态，否则 Chromium 仍按最大化布局渲染，内容会被裁剪
     bridge.fire('show', hwnd, SW_RESTORE)
     await sleep(400)
@@ -252,6 +409,9 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
 
   const styleRes = await bridge.send('getstyle', hwnd)
   const origStyle = parseValue(styleRes)
+  if (!origStyle) {
+    return { ok: false }
+  }
 
   await bridge.send('setparent', hwnd, parentHwnd)
   await bridge.send('style', hwnd, toInt32(origStyle & ~STYLE_STRIP))
@@ -265,35 +425,27 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
     )
   }
 
-  attached.set(harnessId, { hwnd, origStyle, parentHwnd })
-  // 只有仍是最新打开目标时才激活/显示；过期冷启动登记后保持隐藏，切回时即时复用
-  if (isLatest(harnessId)) {
-    activate(harnessId, initialRect)
-    if (coldStart) {
-      // 冷启动窗口是隐藏着被附着的：定位完成后 RESTORE（清最小化态）再由 activate 的 SW_SHOW 显示
-      bridge.fire('show', hwnd, SW_RESTORE)
-    }
-  } else {
-    bridge.fire('show', hwnd, SW_HIDE)
-  }
-  return { ok: true, hwnd, pid, launched: !!pid }
+  attached.set(harnessId, { hwnd, origStyle, parentHwnd, lastRect: initialRect || null, parked: false })
+  return { ok: true, hwnd }
 }
 
-/** 激活某个已附着窗口：显示它、隐藏其余，并可顺手贴合矩形 */
+/** 激活某个已附着窗口：显示它、其余停靠到屏幕外，并可顺手贴合矩形 */
 export function activate(harnessId, rect) {
   if (!attached.has(harnessId)) return
   for (const [id, a] of attached) {
-    if (id !== harnessId) bridge.fire('show', a.hwnd, SW_HIDE)
+    if (id !== harnessId) parkOffscreen(a)
   }
   const a = attached.get(harnessId)
   if (rect) {
     allowedRect = rect
+    a.lastRect = rect
     bridge.fire(
       'move', a.hwnd,
       Math.round(rect.x), Math.round(rect.y),
       Math.round(rect.width), Math.round(rect.height)
     )
   }
+  a.parked = false
   bridge.fire('show', a.hwnd, SW_SHOW)
   activeId = harnessId
 }
@@ -303,6 +455,7 @@ export function reposition(rect) {
   const a = attached.get(activeId)
   if (!a) return
   allowedRect = rect
+  a.lastRect = rect
   bridge.fire(
     'move', a.hwnd,
     Math.round(rect.x), Math.round(rect.y),
@@ -333,6 +486,8 @@ function applyRgn(a, allowed, cur) {
 // ---- 越界看门狗：子窗口被内部拖动（如 VS Code 自定义标题栏）时自动拉回 ----
 // allowedRect 为当前激活嵌入允许占用的物理像素矩形（相对主窗口客户区）
 let allowedRect = null
+// 最近一次 allowedRect：离开工作台（停靠全部窗口）后仍保留，供 showActive 恢复基准
+let lastAllowedRect = null
 let clipTimer = null
 
 function safeWarn(...a) {
@@ -344,6 +499,7 @@ function safeWarn(...a) {
 
 export function setClipRect(rect) {
   allowedRect = rect || null
+  if (allowedRect) lastAllowedRect = allowedRect
   if (allowedRect) {
     const a = attached.get(activeId)
     if (a) {
@@ -415,6 +571,14 @@ export async function release(harnessId) {
   bridge.fire('clearrgn', a.hwnd)
   await bridge.send('style', a.hwnd, a.origStyle)
   await bridge.send('setparent', a.hwnd, 0)
+  // 转独立窗口：若它正停靠在屏幕外，摆回屏幕上（位置用上次容器矩形近似）
+  if (a.lastRect) {
+    bridge.fire(
+      'move', a.hwnd,
+      Math.round(a.lastRect.x), Math.round(a.lastRect.y),
+      Math.round(a.lastRect.width), Math.round(a.lastRect.height)
+    )
+  }
   bridge.fire('show', a.hwnd, SW_RESTORE)
   attached.delete(id)
   if (activeId === id) {
@@ -426,13 +590,14 @@ export async function release(harnessId) {
 /** 关闭指定（默认当前激活的）嵌入：先脱离再杀掉应用进程树 */
 export async function closeAndKill(harnessId) {
   const id = harnessId || activeId
-  // Web 型 harness：杀服务进程树（按端口反查 PID），并结束 ConPTY 隐藏宿主
+  // Web 型 harness：杀服务进程树（按端口反查 PID），并结束 ConPTY 隐藏宿主。
+  // 杀进程可能耗时数秒（netstat/taskkill），全部放后台执行，绝不拖住 IPC 让 UI 等待
   if (webServices.has(id)) {
     const { port } = webServices.get(id)
-    await bridge.send('killport', String(port))
-    pty.closeSilent(id)
     webServices.delete(id)
     if (activeId === id) activeId = null
+    bridge.send('killport', String(port)).catch(() => {})
+    pty.closeSilent(id)
     return
   }
   const a = attached.get(id)
@@ -442,34 +607,48 @@ export async function closeAndKill(harnessId) {
   const pid = /^pid:(\d+)$/.exec(pidLine || '')?.[1]
   await release(id)
   if (pid) {
-    // /T 杀进程树（Electron/Chromium 多进程），/F 强制
+    // /T 杀进程树（Electron/Chromium 多进程），/F 强制；后台执行
     exec('taskkill', ['/T', '/F', '/PID', pid]).catch(() => {})
   }
 }
 
-/** 释放全部嵌入（应用退出时调用，避免外部应用残留无边框样式） */
+/** 释放全部嵌入（应用退出时调用，避免外部应用残留无边框样式）。杀服务并发执行 */
 export async function releaseAll() {
   setClipRect(null)
-  // Web 型服务：应用退出时一并结束
+  const kills = []
   for (const [id, s] of webServices) {
-    await bridge.send('killport', String(s.port))
+    kills.push(bridge.send('killport', String(s.port)).catch(() => {}))
     pty.closeSilent(id)
   }
   webServices.clear()
+  await Promise.all(kills)
   for (const id of [...attached.keys()]) {
     await release(id)
   }
 }
 
-/** 隐藏全部附着窗口（离开工作台路由时调用，保持附着） */
+/** 停靠全部附着窗口（离开工作台路由时调用；先停看门狗再停靠，否则看门狗会把停靠的窗口拉回容器） */
 export function hideAll() {
-  for (const [, a] of attached) bridge.fire('show', a.hwnd, SW_HIDE)
+  setClipRect(null)
+  for (const [, a] of attached) parkOffscreen(a)
 }
 
-/** 重新显示当前激活的附着窗口 */
+/** 重新显示当前激活的附着窗口（从屏幕外停靠位挪回容器） */
 export function showActive() {
   const a = attached.get(activeId)
-  if (a) bridge.fire('show', a.hwnd, SW_SHOW)
+  if (!a) return
+  const rect = allowedRect || lastAllowedRect
+  if (rect) {
+    allowedRect = rect
+    a.lastRect = rect
+    bridge.fire(
+      'move', a.hwnd,
+      Math.round(rect.x), Math.round(rect.y),
+      Math.round(rect.width), Math.round(rect.height)
+    )
+  }
+  a.parked = false
+  bridge.fire('show', a.hwnd, SW_SHOW)
 }
 
 export function status() {

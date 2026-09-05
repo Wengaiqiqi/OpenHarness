@@ -13,7 +13,7 @@ const claudeCode = {
   name: 'Claude Code',
   desc: 'Anthropic 官方 CLI，支持模型配置注入',
   color: '#d97757',
-  icon: 'https://cdn.simpleicons.org/claude/d97757',
+  icon: 'icons/claude.svg',
   cli: 'claude',
   usePty: true,
   processHints: ['claude'],

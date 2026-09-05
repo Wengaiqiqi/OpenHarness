@@ -13,6 +13,7 @@ import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
 import { Refresh, VideoPlay, Link, MagicStick } from '@element-plus/icons-vue'
 import { api } from '@/api'
+import { iconFallback } from '@/icon-fallback'
 
 const router = useRouter()
 const appStore = useAppStore()
@@ -159,7 +160,7 @@ function clearSelection() {
 
     <div v-else class="harness-list">
       <div v-for="h in harnesses" :key="h.id" class="card card-hover harness-card">
-          <img v-if="h.icon" :src="h.icon" class="h-badge-logo" :class="{ 'h-badge-logo-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(h.icon || '') }" alt="" />
+          <img v-if="h.icon" :src="h.icon" class="h-badge-logo" :class="{ 'h-badge-logo-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(h.icon || '') }" alt="" @error="iconFallback($event, h.name, h.color)" />
         <div v-else class="h-badge" :style="{ background: h.color }">{{ h.name.slice(0, 2).toUpperCase() }}</div>
         <div class="h-info">
           <div class="h-name">
