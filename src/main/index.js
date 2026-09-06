@@ -6,7 +6,7 @@ import harnessRegistry from './harnesses'
 import { createChatService } from './chat'
 import { createModelProxy } from './proxy'
 import * as embed from './embed'
-import { resolveCliCommand } from './harnesses/base'
+import { resolveCliCommand, scanSystemApps } from './harnesses/base'
 import * as pty from './pty'
 
 Store.initRenderer()
@@ -95,6 +95,8 @@ app.whenReady().then(() => {
   screen.on('display-metrics-changed', resyncEmbed)
 
   autoStartProxy()
+  // 启动即预热 harness 列表（自动刷新一次；之后进页面秒回缓存，过期仅后台静默刷新）
+  refreshHarnessList().catch(() => {})
   // 预热看门钩子：PowerShell 拉起+编译要 1.5-3 秒，若等冷启动才拉起，
   // 应用的 logo 闪窗会抢在钩子生效前出现（毫秒级闪现）。启动时即常驻预热，
   // 冷启动时只经文件热更目标名单（毫秒级生效），窗口创建瞬间即被停靠——零闪现
@@ -150,20 +152,44 @@ ipcMain.handle('db:set', (_e, key, value) => {
 })
 
 /* ---------------- IPC: Harness 管理 ---------------- */
-ipcMain.handle('harness:list', async () => {
-  // 并行检测：串行 16 个 detect（每个含 where.exe 探测）要数秒，并行后几百毫秒，
-  // 否则工作台首次进入会卡在等待上
+// harness 列表 stale-while-revalidate：进页面秒回缓存；超过 60s 后台静默刷新；
+// 刷新完成后广播 harness:updated，各页面无痕更新状态。手动「扫描本机」才走强制刷新
+// 检测结果持久化：重启应用先显示上次的检测结果（磁盘缓存），
+// 启动时的自动刷新在后台静默完成并广播更新
+let harnessListCache = store.get('harnessListCache') || { data: null, ts: 0 }
+let harnessListRefreshing = null
+
+async function refreshHarnessList(force = false) {
+  const sys = await scanSystemApps(force).catch(() => null)
   const results = await Promise.all(
     harnessRegistry.all().map(async (adapter) => {
       try {
-        const info = await adapter.detect()
+        const info = await adapter.detect(sys)
         return { ...info, id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon }
       } catch (err) {
         return { id: adapter.id, name: adapter.name, desc: adapter.desc, color: adapter.color, icon: adapter.icon, installed: false, error: String(err) }
       }
     })
   )
+  harnessListCache = { data: results, ts: Date.now() }
+  store.set('harnessListCache', harnessListCache)
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('harness:updated', results)
   return results
+}
+
+function startBackgroundHarnessRefresh(maxAgeMs = 60000) {
+  if (Date.now() - harnessListCache.ts <= maxAgeMs) return
+  if (harnessListRefreshing) return
+  harnessListRefreshing = refreshHarnessList(false)
+    .catch(() => {})
+    .finally(() => { harnessListRefreshing = null })
+}
+
+ipcMain.handle('harness:list', async (_e, opts) => {
+  // 强制（扫描本机按钮）或首次（无缓存）→ 同步刷新；否则秒回缓存 + 过期后台静默刷新
+  if (opts?.force || !harnessListCache.data) return refreshHarnessList(!!opts?.force)
+  startBackgroundHarnessRefresh()
+  return harnessListCache.data
 })
 
 ipcMain.handle('harness:injectMcp', async (_e, id, servers) => {
@@ -315,7 +341,10 @@ async function openHarness(id, cssRect) {
   const adapter = harnessRegistry.get(id)
   if (!adapter) return { ok: false, message: `未找到 harness: ${id}` }
   if (!mainWindow) return { ok: false, message: '主窗口未就绪' }
-  const detectInfo = await adapter.detect()
+  // 内嵌打开也必须带系统扫描结果：适配器靠它兜底解析 exePath
+  // （新装应用不在硬编码路径时只有系统扫描能发现——漏传会报"未能找到应用窗口"）
+  const sys = await scanSystemApps().catch(() => null)
+  const detectInfo = await adapter.detect(sys)
   if (!detectInfo.installed) return { ok: false, message: `${adapter.name} 未安装` }
 
   if (cssRect) lastCssRect = cssRect

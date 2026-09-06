@@ -7,7 +7,7 @@ let autoScanned = false
 </script>
 
 <script setup>
-import { onMounted, computed } from 'vue'
+import { onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/app'
@@ -25,15 +25,19 @@ const injectTarget = ref(null)
 const mcpServers = ref([])
 const selectedMcp = ref([])
 
-// 仅软件启动后首次进入 Harness 页自动扫描一次；之后手动点「扫描本机」才会刷新
-async function load() {
-  loading.value = true
+// stale-while-revalidate：进页面秒回缓存；按钮「扫描本机」才强制刷新（有 loading）
+// 后台静默刷新完成后经 harness:updated 广播无痕更新本页状态
+function applyList(list) {
+  // 已检测到（可开启）的排前面，未安装的沉底；新装的应用重新扫描后自动靠前
+  harnesses.value = [...list.filter((h) => h.installed), ...list.filter((h) => !h.installed)]
+}
+
+async function load(force = false) {
+  if (force) loading.value = true
   try {
-    const list = (await api.harnessList()) || []
-    // 已检测到（可开启）的排前面，未安装的沉底；新装的应用重新扫描后自动靠前
-    harnesses.value = [...list.filter((h) => h.installed), ...list.filter((h) => !h.installed)]
+    applyList((await api.harnessList(force)) || [])
   } finally {
-    loading.value = false
+    if (force) loading.value = false
   }
 }
 
@@ -70,7 +74,12 @@ onMounted(() => {
   if (autoScanned) return
   autoScanned = true
   load()
+  // 后台静默刷新完成 → 无痕更新本页状态
+  offUpdated = api.onHarnessUpdated((list) => applyList(list || []))
 })
+
+let offUpdated = null
+onBeforeUnmount(() => { offUpdated?.(); offUpdated = null })
 
 /* ---------------- 模型配置（参考 opencodex：本地代理 + 注入） ---------------- */
 const cfgVisible = ref(false)
@@ -171,7 +180,7 @@ function clearSelection() {
         <h1 class="page-title">Harness 管理</h1>
         <p class="page-sub">检测本机桌面级 Agent Harness，启动应用、注入 MCP、配置模型</p>
       </div>
-      <el-button :icon="Refresh" :loading="loading" @click="load">扫描本机</el-button>
+      <el-button :icon="Refresh" :loading="loading" @click="load(true)">扫描本机</el-button>
     </div>
 
     <div v-if="!harnesses.length && !loading" class="empty-state">
@@ -182,7 +191,7 @@ function clearSelection() {
       <div class="empty-desc">
         点击右上角「扫描本机」重新检测，支持 Claude Desktop、Cursor、Trae、Windsurf、VS Code 等
       </div>
-      <el-button type="primary" :icon="Refresh" :loading="loading" @click="load">扫描本机</el-button>
+      <el-button type="primary" :icon="Refresh" :loading="loading" @click="load(true)">扫描本机</el-button>
     </div>
 
     <div v-else class="harness-list">

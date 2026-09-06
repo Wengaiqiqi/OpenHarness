@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   dbSet: (key, value) => invoke('db:set', key, value),
 
   /* Harness */
-  harnessList: () => invoke('harness:list'),
+  harnessList: (force) => invoke('harness:list', force ? { force: true } : undefined),
   harnessInjectMcp: (id, servers) => invoke('harness:injectMcp', id, servers),
   harnessOpenConfig: (id) => invoke('harness:openConfig', id),
   harnessConfigureModel: (id, payload) => invoke('harness:configureModel', id, payload),
@@ -64,5 +64,10 @@ contextBridge.exposeInMainWorld('api', {
     const handler = (_e, payload) => cb(payload)
     ipcRenderer.on('pty:exit', handler)
     return () => ipcRenderer.removeListener('pty:exit', handler)
+  },
+  onHarnessUpdated: (cb) => {
+    const handler = (_e, payload) => cb(payload)
+    ipcRenderer.on('harness:updated', handler)
+    return () => ipcRenderer.removeListener('harness:updated', handler)
   }
 })

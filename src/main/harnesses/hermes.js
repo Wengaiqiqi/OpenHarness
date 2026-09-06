@@ -1,4 +1,4 @@
-import { USERPROFILE, exists, firstExists, launchExe } from './base'
+import { LOCALAPPDATA, USERPROFILE, exists, firstExists, launchExe } from './base'
 import { mergeYamlAgentProviders } from './agent-config'
 
 /** Hermes（Nous Research hermes-agent）：个人 AI Agent，检测 CLI 与配置目录 */
@@ -12,10 +12,13 @@ const hermes = {
   configCandidates: [`${USERPROFILE}\\.hermes\\config.json`, `${USERPROFILE}\\.hermes\\hermes.json`],
   icon: 'icons/hermes.png',
 
-  async detect() {
-    const exe = firstExists(this.exeCandidates)
+  async detect(sys) {
+    // 系统扫描兜底：Hermes Desktop 装在 AppData\Local\hermes\...（动态版本路径），
+    // 硬编码候选覆盖不了，经开始菜单快捷方式/注册表/运行进程发现
+    const exe = firstExists(this.exeCandidates) || (sys?.find ? sys.find('hermes') : null)
     const configPath = firstExists(this.configCandidates)
-    return { installed: !!(exe || configPath || exists(`${USERPROFILE}\\.hermes`)), exePath: exe, configPath, canInjectMcp: false, canConfigureModel: true }
+    // Hermes Desktop 数据目录在 %LOCALAPPDATA%\hermes（CLI 才用 ~/.hermes）
+    return { installed: !!(exe || configPath || exists(`${USERPROFILE}\\.hermes`) || exists(`${LOCALAPPDATA}\\hermes`)), exePath: exe, configPath, canInjectMcp: false, canConfigureModel: true }
   },
   configPath() {
     return firstExists(this.configCandidates)

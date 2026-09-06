@@ -1,6 +1,6 @@
 <script setup>
 import { api } from '@/api'
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/store/app'
 import { Refresh, Right } from '@element-plus/icons-vue'
@@ -19,18 +19,28 @@ const features = [
 
 const installedCount = computed(() => harnesses.value.filter((h) => h.installed).length)
 
-async function load() {
-  loading.value = true
+function applyList(list) {
+  // 已安装排前面（与 Harness 页一致），新装应用刷新后自动靠前
+  harnesses.value = [...list.filter((h) => h.installed), ...list.filter((h) => !h.installed)]
+}
+
+// stale-while-revalidate：进页面秒回缓存；「刷新」按钮才强制（有 loading）
+async function load(force = false) {
+  if (force) loading.value = true
   try {
-    const list = (await api.harnessList()) || []
-    // 已安装排前面（与 Harness 页一致），新装应用刷新后自动靠前
-    harnesses.value = [...list.filter((h) => h.installed), ...list.filter((h) => !h.installed)]
+    applyList((await api.harnessList(force)) || [])
   } finally {
-    loading.value = false
+    if (force) loading.value = false
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  offUpdated = api.onHarnessUpdated((list) => applyList(list || []))
+})
+
+let offUpdated = null
+onBeforeUnmount(() => { offUpdated?.(); offUpdated = null })
 
 /** 首页卡片点击：已安装的直接进工作台打开 */
 function openWorkspace(h) {
@@ -70,7 +80,7 @@ function openWorkspace(h) {
           本机 Harness 状态
           <span v-if="harnesses.length" class="section-count">{{ installedCount }}/{{ harnesses.length }} 已安装</span>
         </h3>
-        <el-button :icon="Refresh" text :loading="loading" @click="load">刷新</el-button>
+        <el-button :icon="Refresh" text :loading="loading" @click="load(true)">刷新</el-button>
       </div>
       <div v-if="harnesses.length" class="status-grid">
         <div

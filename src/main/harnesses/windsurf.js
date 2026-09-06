@@ -10,8 +10,8 @@ const windsurf = {
   exeCandidates: [`${LOCALAPPDATA}\\Programs\\windsurf\\Windsurf.exe`, `${LOCALAPPDATA}\\Programs\\Windsurf\\Windsurf.exe`],
   configCandidates: [`${USERPROFILE}\\.codeium\\windsurf\\mcp_config.json`],
 
-  async detect() {
-    const exe = firstExists(this.exeCandidates)
+  async detect(sys) {
+    const exe = firstExists(this.exeCandidates) || (sys?.find ? sys.find(['windsurf']) : null)
     const configPath = firstExists(this.configCandidates)
     return { installed: !!(exe || configPath), exePath: exe, configPath, canInjectMcp: !!configPath }
   },

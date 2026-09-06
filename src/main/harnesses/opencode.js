@@ -21,8 +21,8 @@ const opencode = {
   ],
   icon: 'https://cdn.simpleicons.org/opencode/111111',
 
-  async detect() {
-    const exe = firstExists(this.exeCandidates)
+  async detect(sys) {
+    const exe = firstExists(this.exeCandidates) || (sys?.find ? sys.find(['opencode']) : null)
     const configPath = firstExists(this.configCandidates)
     return { installed: !!(exe || configPath), exePath: exe, configPath, canInjectMcp: true, canConfigureModel: true }
   },

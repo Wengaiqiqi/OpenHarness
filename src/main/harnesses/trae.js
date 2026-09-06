@@ -10,8 +10,8 @@ const trae = {
   exeCandidates: [`${LOCALAPPDATA}\\Programs\\Trae CN\\Trae CN.exe`, `${LOCALAPPDATA}\\Programs\\Trae\\Trae.exe`],
   configCandidates: [`${USERPROFILE}\\.trae\\mcp.json`, `${USERPROFILE}\\.trae-cn\\mcp.json`],
 
-  async detect() {
-    const exe = firstExists(this.exeCandidates)
+  async detect(sys) {
+    const exe = firstExists(this.exeCandidates) || (sys?.find ? sys.find(['trae']) : null)
     const configPath = firstExists(this.configCandidates)
     return { installed: !!(exe || configPath), exePath: exe, configPath, canInjectMcp: true }
   },

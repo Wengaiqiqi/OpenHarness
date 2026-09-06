@@ -12,8 +12,8 @@ const zcode = {
   configCandidates: [`${USERPROFILE}\\.zcode\\v2\\setting.json`],
   icon: 'icons/zcode.png',
 
-  async detect() {
-    const exe = firstExists(this.exeCandidates)
+  async detect(sys) {
+    const exe = firstExists(this.exeCandidates) || (sys?.find ? sys.find(['zcode']) : null)
     const configPath = firstExists(this.configCandidates)
     return { installed: !!(exe || configPath || exists(`${USERPROFILE}\\.zcode`)), exePath: exe, configPath, canInjectMcp: false, canConfigureModel: true }
   },

@@ -74,6 +74,18 @@ function buildStdioEntry(server) {
  * 冷启动的闪窗防护由 embed 的 WinEventHook 看门钩子负责（窗口创建瞬间移出屏幕并隐藏）。
  */
 function launchExe(exePath, args = []) {
+  // 商店版（MSIX）：shell:AppsFolder 启动标识经 explorer 拉起
+  if (exePath.startsWith('shell:')) {
+    // 商店版（MSIX）用 cmd start 拉 shell: URI——经 explorer 直接传参在
+    // CreateProcess 下不会生效（实测整个 45s 冷启动期间进程从未出现）
+    try {
+      const child = spawn('cmd.exe', ['/c', 'start', exePath], { detached: true, stdio: 'ignore' })
+      child.unref()
+      return { ok: true, message: '已启动（商店应用）' }
+    } catch (err) {
+      return { ok: false, message: String(err) }
+    }
+  }
   if (!exists(exePath)) return { ok: false, message: `未找到可执行文件: ${exePath}` }
   try {
     const env = { ...process.env }
@@ -121,6 +133,116 @@ function launchCliConsole(title, command, opts = {}) {
 function firstExists(paths) {
   for (const p of paths) if (exists(p)) return p
   return null
+}
+
+let sysScanCache = null
+
+/**
+ * 系统级应用扫描（一次全量，60s 缓存）：卸载注册表 + 运行中进程 + 开始菜单快捷方式。
+ * 返回 find(...keywords)：按关键词匹配返回真实存在的 exe 路径（无则 null）。
+ * 各 GUI 适配器 detect 兜底用——新装应用不在硬编码路径也能被发现。
+ */
+export async function scanSystemApps(force = false) {
+  if (!force && sysScanCache && Date.now() - sysScanCache.ts < 60000) return sysScanCache.data
+  const exists = (p) => p && fs.existsSync(p)
+  let lastRaw = { reg: [], proc: [], lnk: [], appx: [] }
+  // 公开签名：find('zcode', 'z-ai') —— 关键词即适配器的应用名/别名/进程名
+  const find = (...keywords) => {
+    const raw = lastRaw
+    const kws = keywords.map((k) => String(k).toLowerCase()).filter(Boolean)
+    const hit = (text) => kws.some((k) => text.includes(k))
+    // 1) 运行中进程：最可靠（装过且启动过即有 exe 全路径）
+    for (const p of raw.proc || []) {
+      if (hit(p.name.toLowerCase()) && exists(p.exe)) return p.exe
+    }
+    // 1.5) 商店版（MSIX）：包内完整 exe 路径可直接 CreateProcess（实测可行，
+    // 且 fs.existsSync 同样为 true——ACL 允许包用户访问已知完整路径）
+    for (const a of raw.appx || []) {
+      if (hit(a.name.toLowerCase())) return a.location + path.sep + a.exeRel
+    }
+    // 2) 注册表 DisplayIcon：通常指向主 exe（去掉 ",0" 资源索引后缀；指向 .ico 的跳过）
+    for (const r of raw.reg || []) {
+      if (!hit(r.name.toLowerCase())) continue
+      const icon = (r.icon || '').split(',')[0].trim().replace(/^"|"$/g, '')
+      if (icon.toLowerCase().endsWith('.exe') && exists(icon)) return icon
+    }
+    // 3) 注册表 InstallLocation + 关键词拼 exe
+    for (const r of raw.reg || []) {
+      const loc = (r.location || '').replace(/\\+$/, '')
+      if (!loc || (!hit(r.name.toLowerCase()) && !hit(loc.toLowerCase()))) continue
+      for (const k of kws) {
+        const exe = loc + '\\' + k + '.exe'
+        if (exists(exe)) return exe
+      }
+    }
+    // 4) 开始菜单快捷方式目标
+    for (const l of raw.lnk || []) {
+      if (hit(l.name.toLowerCase()) && exists(l.target) && l.target.toLowerCase().endsWith('.exe')) return l.target
+    }
+    return null
+  }
+  const data = { find }
+  try {
+    const scriptPath = path.join(process.env.TEMP || process.cwd(), 'oh-scan-system.ps1')
+    const ps = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      // 中文用户名下路径必须 UTF-8 输出，否则 stdout 乱码、existsSync 全 false，
+      // 用户目录下安装的 harness 永远检测不到
+      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+      "$keys = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+      "        'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+      "        'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+      'foreach ($k in Get-ItemProperty $keys) {',
+      "  if ($k.DisplayName) { Write-Output ('reg|' + $k.DisplayName + '|' + $k.InstallLocation + '|' + $k.DisplayIcon) }",
+      '}',
+      'Get-Process | ForEach-Object {',
+      '  try {',
+      '    $exe = $_.MainModule.FileName',
+      "    if ($exe) { Write-Output ('proc|' + $_.ProcessName + '|' + $exe) }",
+      '  } catch {}',
+      '}',
+      'Get-AppxPackage | ForEach-Object {',
+      '  try {',
+      '    $m = Get-AppxPackageManifest $_',
+      '    $exe = $m.Package.Applications.Application.Executable',
+      "    if ($exe) { Write-Output ('appx|' + $_.Name + '|' + $_.InstallLocation + '|' + $exe) }",
+      '  } catch {}',
+      '}',
+      '$wsh = New-Object -ComObject WScript.Shell',
+      'foreach ($root in @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs", "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")) {',
+      '  Get-ChildItem $root -Recurse -Filter *.lnk | ForEach-Object { Write-Output ("lnk|" + $_.BaseName + "|" + $wsh.CreateShortcut($_.FullName).TargetPath) }',
+      '}'
+    ].join('\n')
+    // 写脚本必须先于执行（首次调用无文件会拿到空结果并缓存 60s）
+    fs.writeFileSync(scriptPath, ps, 'utf-8')
+    const { stdout } = await execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { windowsHide: true, timeout: 25000, maxBuffer: 8 * 1024 * 1024 })
+    const reg = []
+    const proc = []
+    const lnk = []
+    const appx = []
+    for (const line of stdout.split('\n')) {
+      const t = line.trim()
+      if (t.startsWith('reg|')) {
+        const parts = t.split('|')
+        reg.push({ name: parts[1] || '', location: parts[2] || '', icon: parts[3] || '' })
+      } else if (t.startsWith('proc|')) {
+        const parts = t.split('|')
+        if (parts[2]) proc.push({ name: parts[1] || '', exe: parts[2] })
+      } else if (t.startsWith('lnk|')) {
+        const parts = t.split('|')
+        if (parts[2]) lnk.push({ name: parts[1] || '', target: parts[2] })
+      } else if (t.startsWith('appx|')) {
+        const parts = t.split('|')
+        if (parts[2] && parts[3]) appx.push({ name: parts[1] || '', location: parts[2], exeRel: parts[3] })
+      }
+    }
+    data.raw = { reg, proc, lnk, appx }
+    lastRaw = data.raw
+    // 只有扫描成功才缓存：失败（PS 超时/异常）被缓存 60s 会让
+    // 刚装完应用就点扫描的场景反复拿到空结果，误报未安装
+    sysScanCache = { ts: Date.now(), data }
+  } catch {}
+  return data
 }
 
 /**

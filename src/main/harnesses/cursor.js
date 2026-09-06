@@ -10,8 +10,8 @@ const cursor = {
   exeCandidates: [`${LOCALAPPDATA}\\Programs\\cursor\\Cursor.exe`, `${LOCALAPPDATA}\\Programs\\Cursor\\Cursor.exe`],
   configCandidates: [`${USERPROFILE}\\.cursor\\mcp.json`],
 
-  async detect() {
-    const exe = firstExists(this.exeCandidates)
+  async detect(sys) {
+    const exe = firstExists(this.exeCandidates) || (sys?.find ? sys.find(['cursor']) : null)
     const configPath = firstExists(this.configCandidates)
     return { installed: !!(exe || configPath), exePath: exe, configPath, canInjectMcp: true }
   },

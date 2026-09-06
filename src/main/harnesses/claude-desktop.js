@@ -10,8 +10,15 @@ const claudeDesktop = {
   exeCandidates: [`${LOCALAPPDATA}\\AnthropicClaude\\claude.exe`, `${LOCALAPPDATA}\\AnthropicClaude\\Claude.exe`],
   configCandidates: [`${process.env.APPDATA}\\Claude\\claude_desktop_config.json`],
 
-  async detect() {
-    const exe = firstExists(this.exeCandidates)
+  async detect(sys) {
+    // 商店版（MSIX）经 appx 层返回 shell:AppsFolder 启动标识；传统版路径须含 AnthropicClaude。
+    // find 是可变参数签名：关键词必须逐个传（传数组会被当成单个关键词匹配失败）
+    const exe = firstExists(this.exeCandidates) || (sys?.find ? (() => {
+      const e = sys.find('claude desktop', 'claude')
+      if (!e) return null
+      if (e.startsWith('shell:')) return e
+      return /anthropicclaude/i.test(e) ? e : null
+    })() : null)
     const configPath = firstExists(this.configCandidates)
     return { installed: !!(exe || configPath), exePath: exe, configPath, canInjectMcp: !!configPath }
   },
