@@ -13,7 +13,7 @@ export function createChatService() {
     const controller = new AbortController()
     controllers.set(sessionId, controller)
 
-    const type = provider.type || 'openai-compatible'
+    let type = provider.type || 'openai-compatible'
 
     if (type === 'bedrock') {
       const msg = 'Amazon Bedrock 暂未支持：需要 AWS SigV4 签名，请通过 OpenAI Compatible 网关接入'
@@ -21,12 +21,12 @@ export function createChatService() {
       return { ok: false, message: msg }
     }
 
-    const url = buildUrl(provider, type)
-    const headers = buildHeaders(provider, type)
-    const baseBody = buildBody(type, provider, model, messages)
+    let url = buildUrl(provider, type)
+    let headers = buildHeaders(provider, type)
+    let baseBody = buildBody(type, provider, model, messages)
 
     // 思考等级候选链：首选参数 → 逐级降级；HTTP 400/422 时沿链重试
-    const candidates = thinkingCandidates(type, model, thinkingLevel || 'medium')
+    let candidates = thinkingCandidates(type, model, thinkingLevel || 'medium')
     let usedIdx = 0
 
     const runFetch = () => {
@@ -55,6 +55,18 @@ export function createChatService() {
       }
 
       let res = await runFetch()
+      // /responses 端点不存在（404，如智普只支持 chat/completions）→
+      // 自动把协议降级为 OpenAI Compatible 重试（流式解析/思考链同步切换）
+      if (type === 'openai-responses' && res.status === 404) {
+        console.warn('[chat] /responses 404，降级为 chat/completions 协议重试')
+        type = 'openai-compatible'
+        url = buildUrl(provider, type)
+        headers = buildHeaders(provider, type)
+        baseBody = buildBody(type, provider, model, messages)
+        candidates = thinkingCandidates(type, model, thinkingLevel || 'medium')
+        usedIdx = 0
+        res = await runFetch()
+      }
       // 思考参数不被接受（HTTP 400/422）时沿候选链降级重试
       while ((res.status === 400 || res.status === 422) && usedIdx < candidates.length - 1) {
         const bad = await res.text().catch(() => '')
