@@ -183,7 +183,10 @@ export async function scanSystemApps(force = false) {
   }
   const data = { find }
   try {
-    const scriptPath = path.join(process.env.TEMP || process.cwd(), 'oh-scan-system.ps1')
+    // 唯一脚本名：并发扫描同时重写同一路径时，PS 启动可能读到截断脚本
+    // （appx 层恰在末尾被截掉还会被缓存 60s）——唯一名 + 用后即删彻底杜绝
+    const scriptPath = path.join(process.env.TEMP || process.cwd(),
+      'oh-scan-system-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.ps1')
     const ps = [
       "$ErrorActionPreference = 'SilentlyContinue'",
       // 中文用户名下路径必须 UTF-8 输出，否则 stdout 乱码、existsSync 全 false，
@@ -238,6 +241,7 @@ export async function scanSystemApps(force = false) {
     }
     data.raw = { reg, proc, lnk, appx }
     lastRaw = data.raw
+    try { fs.unlinkSync(scriptPath) } catch {}
     // 只有扫描成功才缓存：失败（PS 超时/异常）被缓存 60s 会让
     // 刚装完应用就点扫描的场景反复拿到空结果，误报未安装
     sysScanCache = { ts: Date.now(), data }

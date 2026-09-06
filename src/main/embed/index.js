@@ -168,7 +168,8 @@ export function startWatcher(processHints = []) {
   const names = (processHints || []).map((n) => String(n).replace(/['",]/g, '')).filter(Boolean)
   try {
     if (!watcherProc || watcherProc.exitCode !== null) {
-      const scriptPath = path.join(process.env.TEMP || process.cwd(), 'oh-watcher.ps1')
+      const scriptPath = path.join(process.env.TEMP || process.cwd(),
+        'oh-watcher-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.ps1')
       fs.writeFileSync(scriptPath, WATCHER_PS, 'utf-8')
       // 初始为空名单：钩子常驻但不停靠任何窗口（STOP 语义已废除，退出统一走进程 kill）
       fs.writeFileSync(watcherTargetsFile(), '', 'utf-8')

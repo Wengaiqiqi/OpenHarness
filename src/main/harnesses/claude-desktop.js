@@ -15,9 +15,9 @@ const claudeDesktop = {
     // find 是可变参数签名：关键词必须逐个传（传数组会被当成单个关键词匹配失败）
     const exe = firstExists(this.exeCandidates) || (sys?.find ? (() => {
       const e = sys.find('claude desktop', 'claude')
-      if (!e) return null
-      if (e.startsWith('shell:')) return e
-      return /anthropicclaude/i.test(e) ? e : null
+      // 放行：商店版启动标识 / 商店版 WindowsApps 包内路径 / 传统版 AnthropicClaude
+      if (!e || !(e.startsWith('shell:') || /windowsapps|anthropicclaude/i.test(e))) return null
+      return e
     })() : null)
     const configPath = firstExists(this.configCandidates)
     return { installed: !!(exe || configPath), exePath: exe, configPath, canInjectMcp: !!configPath }
