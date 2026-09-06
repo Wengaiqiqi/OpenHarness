@@ -10,15 +10,16 @@ export function createChatService() {
       return { ok: false, message: '请先在「模型服务」中配置 Provider 与 API Key' }
     }
 
-    const controller = new AbortController()
-    controllers.set(sessionId, controller)
-
     let type = provider.type || 'openai-compatible'
 
     if (type === 'bedrock') {
       const msg = 'Amazon Bedrock 暂未支持：需要 AWS SigV4 签名，请通过 OpenAI Compatible 网关接入'
       pushChunk(win, sessionId, { type: 'error', message: msg })
       return { ok: false, message: msg }
+    }
+
+    if (controllers.has(sessionId)) {
+      return { ok: false, message: '该对话正在生成，请先停止或等待完成' }
     }
 
     let url = buildUrl(provider, type)
@@ -28,6 +29,12 @@ export function createChatService() {
     // 思考等级候选链：首选参数 → 逐级降级；HTTP 400/422 时沿链重试
     let candidates = thinkingCandidates(type, model, thinkingLevel || 'medium')
     let usedIdx = 0
+
+    const controller = new AbortController()
+    controllers.set(sessionId, controller)
+    let reader = null
+    let watchdog = null
+    let timedOut = false
 
     const runFetch = () => {
       const body = { ...baseBody, ...candidates[usedIdx] }
@@ -41,17 +48,17 @@ export function createChatService() {
 
     try {
       // 看门狗：连接后 90 秒内没有任何数据则主动中止，把"永远卡住"变成可见报错
-      let timedOut = false
-      let watchdog = setTimeout(() => {
-        timedOut = true
-        controller.abort()
-      }, 90000)
-      const resetWatchdog = () => {
+      const armWatchdog = () => {
         clearTimeout(watchdog)
         watchdog = setTimeout(() => {
           timedOut = true
           controller.abort()
         }, 90000)
+      }
+      armWatchdog()
+      const resetWatchdog = () => {
+        timedOut = false
+        armWatchdog()
       }
 
       let res = await runFetch()
@@ -59,6 +66,7 @@ export function createChatService() {
       // 自动把协议降级为 OpenAI Compatible 重试（流式解析/思考链同步切换）
       if (type === 'openai-responses' && res.status === 404) {
         console.warn('[chat] /responses 404，降级为 chat/completions 协议重试')
+        await res.body?.cancel().catch(() => {})
         type = 'openai-compatible'
         url = buildUrl(provider, type)
         headers = buildHeaders(provider, type)
@@ -76,20 +84,16 @@ export function createChatService() {
       }
 
       if (!res.ok) {
-        clearTimeout(watchdog)
         const text = await res.text().catch(() => '')
-        controllers.delete(sessionId)
         pushChunk(win, sessionId, { type: 'error', message: `HTTP ${res.status}: ${text.slice(0, 500)}` })
         return { ok: false, message: `HTTP ${res.status}` }
       }
 
       if (!res.body) {
-        clearTimeout(watchdog)
-        controllers.delete(sessionId)
         return { ok: false, message: '响应无 body' }
       }
 
-      const reader = res.body.getReader()
+      reader = res.body.getReader()
       const decoder = new TextDecoder('utf-8')
       let buffer = ''
 
@@ -107,7 +111,6 @@ export function createChatService() {
           if (!line.startsWith('data:')) continue
           const payload = line.slice(5).trim()
           if (payload === '[DONE]') {
-            controllers.delete(sessionId)
             pushChunk(win, sessionId, { type: 'done' })
             return { ok: true }
           }
@@ -116,7 +119,6 @@ export function createChatService() {
             if (json.error) {
               const msg = json.error.message || JSON.stringify(json.error)
               pushChunk(win, sessionId, { type: 'error', message: msg })
-              controllers.delete(sessionId)
               return { ok: false, message: msg }
             }
             const delta = extractDelta(type, json)
@@ -127,13 +129,9 @@ export function createChatService() {
         }
       }
 
-      controllers.delete(sessionId)
-      clearTimeout(watchdog)
       pushChunk(win, sessionId, { type: 'done' })
       return { ok: true }
     } catch (err) {
-      controllers.delete(sessionId)
-      clearTimeout(watchdog)
       if (timedOut) {
         const msg = '上游 90 秒未返回任何数据，已中止（请检查网络或系统代理）'
         pushChunk(win, sessionId, { type: 'error', message: msg })
@@ -145,13 +143,19 @@ export function createChatService() {
       }
       pushChunk(win, sessionId, { type: 'error', message: String(err) })
       return { ok: false, message: String(err) }
+    } finally {
+      clearTimeout(watchdog)
+      if (reader) {
+        await reader.cancel().catch(() => {})
+        try { reader.releaseLock() } catch {}
+      }
+      if (controllers.get(sessionId) === controller) controllers.delete(sessionId)
     }
   }
 
   function abort(sessionId) {
     const c = controllers.get(sessionId)
     if (c) c.abort()
-    controllers.delete(sessionId)
   }
 
   return { send, abort }

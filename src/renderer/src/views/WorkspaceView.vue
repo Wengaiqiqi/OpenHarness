@@ -65,6 +65,7 @@ function activateTab(t) {
       embedOk.value = true
       t.webUrl = res.webUrl || null
       t.mode = res.mode || (t.webUrl ? 'web' : 'native')
+      if (t.mode === 'pty' && !res.reactivated) t.generation = (t.generation || 0) + 1
       if (t.webUrl || t.mode === 'pty') return
       await syncSize()
       setTimeout(() => {
@@ -78,7 +79,13 @@ function activateTab(t) {
 }
 
 /** 关闭标签：先切 UI 再后台杀进程（杀进程可能耗时数秒，绝不让 UI 等待） */
-function closeTab(t) {
+async function closeTab(t) {
+  try {
+    await api.embedClose(t.id)
+  } catch (err) {
+    ElMessage.error(String(err))
+    return
+  }
   const idx = tabs.value.findIndex((x) => x.id === t.id)
   if (idx < 0) return
   tabs.value.splice(idx, 1)
@@ -88,7 +95,6 @@ function closeTab(t) {
     const next = tabs.value[idx] || tabs.value[idx - 1]
     if (next) activateTab(next)
   }
-  api.embedClose(t.id).catch(() => {})
 }
 
 /** "+" 下拉选择后新开一个嵌入标签 */
@@ -106,7 +112,7 @@ async function addTab(h) {
 async function rescan() {
   loading.value = true
   try {
-    harnessList.value = (await api.harnessList()) || []
+    harnessList.value = (await api.harnessList(true)) || []
     ElMessage.success('已重新扫描本机 Harness')
   } finally {
     loading.value = false
@@ -114,9 +120,10 @@ async function rescan() {
 }
 
 /** 转为独立窗口：先切 UI，脱离放后台 */
-function toStandalone() {
+async function toStandalone() {
   const t = activeTab.value
   if (!t) return
+  try { await api.embedRelease(t.id) } catch (err) { ElMessage.error(String(err)); return }
   const idx = tabs.value.findIndex((x) => x.id === t.id)
   if (idx >= 0) tabs.value.splice(idx, 1)
   if (activeTabId.value === t.id) {
@@ -125,14 +132,15 @@ function toStandalone() {
     const next = tabs.value[idx] || tabs.value[idx - 1]
     if (next) activateTab(next)
   }
-  api.embedRelease(t.id).catch(() => {})
   ElMessage.success(`「${t.name}」已转为独立窗口运行`)
 }
 
 /** 释放并返回：先导航，释放放后台（DeepSeek 等 web 型要杀服务进程树，可能耗时数秒） */
-function releaseAndBack() {
-  router.replace('/harness')
-  api.embedReleaseAll().catch(() => {})
+async function releaseAndBack() {
+  try {
+    await api.embedReleaseAll()
+    router.replace('/harness')
+  } catch (err) { ElMessage.error(String(err)) }
 }
 
 onMounted(async () => {
@@ -233,7 +241,7 @@ onBeforeUnmount(() => {
     <div ref="hostEl" class="ws-host">
       <TerminalView
         v-for="t in tabs.filter((tab) => tab.mode === 'pty')"
-        :key="t.id"
+        :key="`${t.id}:${t.generation || 0}`"
         :id="t.id"
         :visible="t.id === activeTabId"
         :class="{ 'ws-terminal-hidden': t.id !== activeTabId }"

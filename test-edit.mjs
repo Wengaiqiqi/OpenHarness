@@ -27,6 +27,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('chat:send', (_e, args) => chat.send(win, args))
   ipcMain.handle('db:get', () => null)
   ipcMain.handle('db:set', () => true)
+  ipcMain.handle('db:patchSettings', (_e, patch) => patch)
 
   const win = new BrowserWindow({
     show: false,

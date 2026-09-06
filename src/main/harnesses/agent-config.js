@@ -1,6 +1,7 @@
 import fs from 'node:fs'
-import path from 'node:path'
-import yaml from 'js-yaml'
+import * as yaml from 'js-yaml'
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
+import { atomicWriteWithBackup, readConfig } from './config-file.js'
 
 /**
  * Agent 模型配置写入器（参考 opencodex 的集成格式）。
@@ -12,26 +13,25 @@ import yaml from 'js-yaml'
  */
 
 const PROXY_BASE = 'http://127.0.0.1:18200/v1'
-const PROXY_TOKEN = 'openharness'
 const V2_PACKAGE = '@opencode-ai/ai/providers/openai-compatible'
 
-function isFile(p) {
-  try {
-    return fs.existsSync(p) && fs.statSync(p).isFile()
-  } catch {
-    return false
-  }
-}
-
-function backupAndWrite(p, data) {
-  fs.mkdirSync(path.dirname(p), { recursive: true })
-  // 目标若是目录（候选路径配错时）直接 copyFile 会 EPERM
-  if (isFile(p)) fs.copyFileSync(p, p + '.openharness.bak')
-  fs.writeFileSync(p, data, 'utf-8')
-}
-
 function readDoc(p) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')) } catch { return {} }
+  return readConfig(p, JSON.parse, 'JSON')
+}
+
+function requireToken(token) {
+  if (typeof token !== 'string' || !token) throw new Error('OpenHarness 配置 token 不能为空')
+  if (/[\u0000-\u001f\u007f]/.test(token)) throw new Error('OpenHarness 配置 token 不能包含控制字符')
+  return token
+}
+
+function objectField(doc, key) {
+  const value = doc[key]
+  if (value === undefined) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`拒绝覆盖非对象配置字段: ${key}`)
+  }
+  return value
 }
 
 /**
@@ -63,50 +63,64 @@ function modelMap(models) {
 }
 
 /** JSON 文档：合并 opencode 形状的 V1+V2 provider 块 */
-export function mergeJsonAgentProviders(configPath, { models }) {
+export function mergeJsonAgentProviders(configPath, { models, model, token }) {
   const doc = readDoc(configPath)
   const mm = modelMap(models)
-  const options = { baseURL: PROXY_BASE, apiKey: PROXY_TOKEN }
+  const options = { baseURL: PROXY_BASE, apiKey: requireToken(token) }
   doc.provider = {
-    ...(doc.provider || {}),
+    ...objectField(doc, 'provider'),
     openharness: { npm: '@ai-sdk/openai-compatible', name: 'OpenHarness', options, models: mm }
   }
   doc.providers = {
-    ...(doc.providers || {}),
+    ...objectField(doc, 'providers'),
     openharness: { package: V2_PACKAGE, name: 'OpenHarness', settings: options, models: mm }
   }
-  backupAndWrite(configPath, JSON.stringify(doc, null, 2))
+  atomicWriteWithBackup(configPath, JSON.stringify(doc, null, 2))
   return { ok: true, path: configPath }
 }
 
+export function mergeClaudeCodeSettings(configPath, { models, model, token }) {
+  const doc = readDoc(configPath)
+  doc.env = {
+    ...objectField(doc, 'env'),
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:18200',
+    ANTHROPIC_AUTH_TOKEN: requireToken(token)
+  }
+  if (model) doc.model = model
+  atomicWriteWithBackup(configPath, JSON.stringify(doc, null, 2))
+  return { ok: true, path: configPath, model }
+}
+
 /** YAML 文档：在 rootPath（如 ['providers'] 或 ['llm-pi-ai','providers']）下合并 V2 块 */
-export function mergeYamlAgentProviders(configPath, { models }, rootPath = ['providers']) {
-  let doc = {}
-  try { doc = yaml.load(fs.readFileSync(configPath, 'utf-8')) || {} } catch {}
+export function mergeYamlAgentProviders(configPath, { models, model, token }, rootPath = ['providers']) {
+  const doc = readConfig(configPath, (source) => yaml.load(source) || {}, 'YAML')
   let node = doc
   for (const key of rootPath.slice(0, -1)) {
-    if (typeof node[key] !== 'object' || node[key] === null) node[key] = {}
+    if (node[key] === undefined) node[key] = {}
+    else if (!node[key] || typeof node[key] !== 'object' || Array.isArray(node[key])) {
+      throw new Error(`拒绝覆盖非对象配置字段: ${key}`)
+    }
     node = node[key]
   }
   const last = rootPath[rootPath.length - 1]
-  const current = typeof node[last] === 'object' && node[last] !== null ? node[last] : {}
+  const current = objectField(node, last)
   node[last] = {
     ...current,
     openharness: {
       package: V2_PACKAGE,
       name: 'OpenHarness',
-      settings: { baseURL: PROXY_BASE, apiKey: PROXY_TOKEN },
+      settings: { baseURL: PROXY_BASE, apiKey: requireToken(token) },
       models: modelMap(models)
     }
   }
-  backupAndWrite(configPath, yaml.dump(doc, { lineWidth: -1, noRefs: true }))
+  atomicWriteWithBackup(configPath, yaml.dump(doc, { lineWidth: -1, noRefs: true }))
   return { ok: true, path: configPath }
 }
 
 /** opencode 形状的 mcp 块：remote（SSE/HTTP）+ local（stdio），合并注入 opencode.json */
 export function mergeOpencodeMcp(configPath, servers) {
   const doc = readDoc(configPath)
-  const existing = doc.mcp || {}
+  const existing = objectField(doc, 'mcp')
   const injected = []
   for (const s of servers || []) {
     if (s.transport === 'http' && s.url) {
@@ -129,27 +143,38 @@ export function mergeOpencodeMcp(configPath, servers) {
     }
   }
   doc.mcp = existing
-  backupAndWrite(configPath, JSON.stringify(doc, null, 2))
+  atomicWriteWithBackup(configPath, JSON.stringify(doc, null, 2))
   return { ok: true, path: configPath, injected }
 }
 
 /** TOML 文档：codex 风格 model_provider 表（幂等替换我们管理的段） */
-export function mergeTomlProvider(configPath, { model }) {
+export function mergeTomlProvider(configPath, { models, model, token }) {
   let toml = ''
-  try { toml = fs.readFileSync(configPath, 'utf-8') } catch {}
-  if (isFile(configPath)) fs.copyFileSync(configPath, configPath + '.openharness.bak')
-  toml = toml.replace(/\[model_providers\.openharness\][\s\S]*?(?=\n\[|$)/g, '')
-  toml = toml.replace(/^model_provider\s*=.*$/gm, '')
-  toml = toml.replace(/^model\s*=.*$/gm, '')
-  const inject =
-    `model_provider = "openharness"\n` +
-    (model ? `model = "${model}"\n` : '') +
-    `\n[model_providers.openharness]\n` +
-    `name = "OpenHarness"\n` +
-    `base_url = "http://127.0.0.1:18200/v1"\n` +
-    `wire_api = "chat"\n` +
-    `env_key = "OPENHARNESS_API_KEY"\n`
-  fs.mkdirSync(path.dirname(configPath), { recursive: true })
-  fs.writeFileSync(configPath, toml.trim() + '\n\n' + inject, 'utf-8')
-  return { ok: true, path: configPath }
+  try { toml = fs.readFileSync(configPath, 'utf-8') } catch (err) {
+    if (err?.code !== 'ENOENT') throw err
+  }
+  let doc
+  try { doc = parseToml(toml, { integersAsBigInt: true }) } catch (err) {
+    throw new Error(`拒绝覆盖无法解析的 TOML 配置: ${configPath}`, { cause: err })
+  }
+  const auth = `Bearer ${requireToken(token)}`
+  delete doc.model
+  doc.model_provider = 'openharness'
+  if (model) doc.model = String(model)
+  const providers = objectField(doc, 'model_providers')
+  providers.openharness = {
+    name: 'OpenHarness',
+    base_url: PROXY_BASE,
+    wire_api: 'chat',
+    http_headers: { Authorization: auth }
+  }
+  doc.model_providers = providers
+  const next = stringifyToml(doc, { numbersAsFloat: true })
+  try {
+    parseToml(next, { integersAsBigInt: true })
+  } catch (err) {
+    throw new Error(`拒绝写入无效 TOML 配置: ${configPath}`, { cause: err })
+  }
+  atomicWriteWithBackup(configPath, next)
+  return { ok: true, path: configPath, note: 'TOML 已按 parser 标准化写入，原注释/格式可能改变' }
 }

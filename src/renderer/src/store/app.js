@@ -8,7 +8,7 @@ export const useAppStore = defineStore('app', () => {
   function applyTheme(t) {
     theme.value = t
     document.documentElement.classList.toggle('dark', t === 'dark')
-    api?.dbSet('settings', { theme: t })
+    api?.patchSettings({ theme: t })
     api?.syncThemeOverlay?.(t === 'dark')
   }
 

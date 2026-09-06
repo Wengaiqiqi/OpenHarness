@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, screen, dialog } from 'electron'
+import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import fs from 'node:fs'
 import Store from 'electron-store'
@@ -8,6 +9,7 @@ import { createModelProxy } from './proxy'
 import * as embed from './embed'
 import { resolveCliCommand, scanSystemApps } from './harnesses/base'
 import * as pty from './pty'
+import { buildModelRoutes } from './model-routing'
 
 Store.initRenderer()
 
@@ -29,8 +31,12 @@ const store = new Store({
 })
 
 let mainWindow = null
+let shutdownComplete = false
+let shuttingDown = false
 const inflightOpens = new Map()
-pty.initPty((channel, payload) => mainWindow?.webContents.send(channel, payload))
+pty.initPty((channel, payload) => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+})
 const chat = createChatService()
 
 function createWindow() {
@@ -59,11 +65,15 @@ function createWindow() {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
+  mainWindow.on('close', (event) => {
+    if (!shutdownComplete) { event.preventDefault(); app.quit() }
+  })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -111,9 +121,24 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  pty.closeAll()
-  embed.releaseAll().catch(() => {})
+app.on('before-quit', (event) => {
+  if (shutdownComplete) return
+  event.preventDefault()
+  if (shuttingDown) return
+  shuttingDown = true
+  embed.hideAll()
+  ;(async () => {
+    await Promise.allSettled([...inflightOpens.values()])
+    await embed.releaseAll()
+    pty.closeAll()
+    await modelProxy.stop()
+    embed.disposeBridge()
+    shutdownComplete = true
+    app.quit()
+  })().catch((err) => {
+    shuttingDown = false
+    dialog.showErrorBox('暂时无法安全退出', `外部应用窗口未能完成释放，请重试。\n${String(err)}`)
+  })
 })
 
 /* ---------------- IPC: 应用通用 ---------------- */
@@ -149,6 +174,16 @@ ipcMain.handle('db:get', (_e, key) => store.get(key))
 ipcMain.handle('db:set', (_e, key, value) => {
   store.set(key, value)
   return true
+})
+ipcMain.handle('db:patchSettings', (_e, patch) => {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('无效设置')
+  const allowed = { theme: ['dark', 'light'], language: ['zh-CN', 'en-US'], thinkingLevel: ['off', 'low', 'medium', 'high'] }
+  for (const [key, value] of Object.entries(patch)) {
+    if (!allowed[key]?.includes(value)) throw new Error(`无效设置: ${key}`)
+  }
+  const settings = { ...store.get('settings'), ...patch }
+  store.set('settings', settings)
+  return settings
 })
 
 /* ---------------- IPC: Harness 管理 ---------------- */
@@ -235,17 +270,22 @@ ipcMain.handle('mcp:remove', (_e, id) => {
 ipcMain.handle('provider:getAll', () => store.get('providers'))
 
 ipcMain.handle('provider:save', (_e, provider) => {
+  if (configuringModel) throw new Error('正在配置模型，请稍后修改提供商')
   const list = store.get('providers')
   const idx = list.findIndex((p) => p.id === provider.id)
   if (idx >= 0) list[idx] = provider
   else list.push(provider)
+  modelProxy.validateRoutes(buildModelRoutes(store.get('modelConfigHistory'), list))
   store.set('providers', list)
+  syncProxyRoutes()
   return list
 })
 
 ipcMain.handle('provider:remove', (_e, id) => {
+  if (configuringModel) throw new Error('正在配置模型，请稍后删除提供商')
   const list = store.get('providers').filter((p) => p.id !== id)
   store.set('providers', list)
+  syncProxyRoutes()
   return list
 })
 
@@ -268,7 +308,7 @@ ipcMain.handle('provider:listModels', async (_e, { type, baseUrl, apiKey }) => {
       headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
     }
 
-    const res = await fetch(url, { headers })
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(30000) })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       return { ok: false, message: `HTTP ${res.status}: ${text.slice(0, 200)}` }
@@ -326,6 +366,7 @@ function applyClip() {
 }
 
 ipcMain.handle('embed:open', async (_e, id, cssRect) => {
+  if (shuttingDown) return { ok: false, message: '应用正在退出' }
   const previous = inflightOpens.get(id)
   if (previous) return previous
   const operation = openHarness(id, cssRect)
@@ -381,7 +422,7 @@ async function openHarness(id, cssRect) {
 
 ipcMain.on('pty:input', (_e, id, data) => pty.input(id, data))
 ipcMain.on('pty:resize', (_e, id, cols, rows) => pty.resize(id, cols, rows))
-ipcMain.handle('pty:buffer', (_e, id) => pty.readBuffer(id))
+ipcMain.handle('pty:buffer', (_e, id, afterOffset) => pty.readBuffer(id, afterOffset))
 ipcMain.handle('pty:close', (_e, id) => { pty.close(id); return true })
 
 ipcMain.handle('embed:reposition', (_e, rect) => {
@@ -392,11 +433,11 @@ ipcMain.handle('embed:reposition', (_e, rect) => {
   return true
 })
 
-// 关闭标签 = 释放该嵌入（恢复原样式并脱离，应用本身继续独立运行）
-// 关闭标签 = 关闭嵌入的应用本身（杀进程树），而非释放为独立窗口
-ipcMain.handle('embed:close', (_e, id) => {
-  if (id === 'claude-code') { pty.close(id); return true }
-  return embed.closeAndKill(id)
+// 等待正在打开的实例，然后走正常关闭，让外部应用保留保存提示。
+ipcMain.handle('embed:close', async (_e, id) => {
+  await inflightOpens.get(id)
+  await embed.closeAndKill(id)
+  return true
 })
 
 // 转为独立窗口 = 仅脱离（恢复原样式/父子关系），进程继续运行
@@ -422,34 +463,43 @@ ipcMain.handle('embed:status', () => {
 })
 
 /* ---------------- 内置模型代理 + Harness 模型配置 ---------------- */
-const modelProxy = createModelProxy({ port: 18200, log: (...a) => console.warn('[proxy]', ...a) })
+const proxyToken = store.get('proxyToken') || randomBytes(32).toString('hex')
+store.set('proxyToken', proxyToken)
+process.env.OPENHARNESS_API_KEY = proxyToken
+const modelProxy = createModelProxy({ port: 18200, token: proxyToken, log: (...a) => console.warn('[proxy]', ...a) })
 
-async function ensureProxy(provider, model) {
-  modelProxy.setTarget(provider, model)
-  store.set('proxyTarget', { providerId: provider.id, model })
-  const st = modelProxy.status()
-  if (!st.running) await modelProxy.start().catch((e) => { throw new Error('本地代理启动失败：' + e.message) })
-  return modelProxy.status()
+function syncProxyRoutes() {
+  const providers = store.get('providers') || []
+  const history = store.get('modelConfigHistory') || {}
+  const target = store.get('proxyTarget')
+  // Older installs saved just one target; use it only when no selections exist.
+  if (!Object.keys(history).length && target) history.legacy = { items: [target] }
+  const routes = buildModelRoutes(history, providers)
+  modelProxy.setRoutes(routes)
+  const primary = routes.find((r) => r.provider.id === target?.providerId && r.model === target.model) || routes[0]
+  modelProxy.setTarget(primary?.provider || null, primary?.model || '')
+  return routes
 }
 
 // 开机自动拉起代理：只要配置过模型注入且存在对应 Provider
 async function autoStartProxy() {
   try {
-    const target = store.get('proxyTarget')
-    if (!target?.providerId) return
-    const provider = (store.get('providers') || []).find((p) => p.id === target.providerId)
-    if (!provider) return
-    modelProxy.setTarget(provider, target.model)
+    if (!syncProxyRoutes().length) return
     if (!modelProxy.status().running) await modelProxy.start()
-    console.warn('[proxy] auto-started for', provider.name, target.model)
   } catch (e) {
     console.warn('[proxy] auto-start failed:', String(e))
   }
 }
 
-ipcMain.handle('proxy:status', () => modelProxy.status())
+ipcMain.handle('proxy:status', () => ({
+  ...modelProxy.status(),
+  needsReconfigure: Object.values(store.get('modelConfigHistory') || {}).some((h) => h.authVersion !== 1) ||
+    (!!store.get('proxyTarget') && !Object.keys(store.get('modelConfigHistory') || {}).length)
+}))
 
+let configuringModel = false
 ipcMain.handle('harness:configureModel', async (_e, id, { selection }) => {
+  if (configuringModel) return { ok: false, message: '正在配置模型，请稍后重试' }
   const adapter = harnessRegistry.get(id)
   if (!adapter || !adapter.configureModel) return { ok: false, message: '该 Harness 暂不支持模型配置' }
   const providers = store.get('providers') || []
@@ -462,28 +512,34 @@ ipcMain.handle('harness:configureModel', async (_e, id, { selection }) => {
   if (bad) return { ok: false, message: `协议 ${bad.provider.type} 暂不支持代理接入，请使用 OpenAI Compatible / Anthropic / Gemini` }
 
   try {
+    configuringModel = true
     const primary = resolved[0]
-    await ensureProxy(primary.provider, primary.model)
-    // 注册模型路由：代理按请求的模型名转发到对应 Provider
-    modelProxy.setRoutes(resolved.map((x) => ({ provider: x.provider, model: x.model })))
+    const history = store.get('modelConfigHistory') || {}
+    history[id] = {
+      items: resolved.map((x) => ({ providerId: x.provider.id, providerName: x.provider.name, model: x.model })),
+      authVersion: 1,
+      updatedAt: Date.now()
+    }
+    const routes = buildModelRoutes(history, providers)
+    modelProxy.validateRoutes(routes)
+    if (!modelProxy.status().running) await modelProxy.start()
     const r = await adapter.configureModel({
       models: resolved.map((x) => x.model),
-      model: primary.model
+      model: primary.model,
+      token: proxyToken
     })
     if (r.ok) {
+      modelProxy.setRoutes(routes)
+      modelProxy.setTarget(primary.provider, primary.model)
+      history[id].configPath = r.path || null
+      store.set({ modelConfigHistory: history, proxyTarget: { providerId: primary.provider.id, model: primary.model } })
       r.proxy = modelProxy.status()
-      // 配置历史：下次打开「配置模型」弹窗时回显上次选择
-      const history = store.get('modelConfigHistory') || {}
-      history[id] = {
-        items: resolved.map((x) => ({ providerId: x.provider.id, providerName: x.provider.name, model: x.model })),
-        configPath: r.path || null,
-        updatedAt: Date.now()
-      }
-      store.set('modelConfigHistory', history)
     }
     return r
   } catch (err) {
     return { ok: false, message: String(err) }
+  } finally {
+    configuringModel = false
   }
 })
 

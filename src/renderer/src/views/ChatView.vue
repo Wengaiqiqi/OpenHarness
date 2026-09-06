@@ -1,7 +1,7 @@
 <script setup>
 import { api } from '@/api'
 import OhLogo from '@/components/OhLogo.vue'
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Promotion, Delete, VideoPause, EditPen } from '@element-plus/icons-vue'
 import { useAppStore } from '@/store/app'
@@ -16,9 +16,13 @@ const providers = ref([])
 const providerId = ref('')
 const model = ref('')
 const thinkingLevel = ref('medium')
+const stopping = ref(false)
+const requestPending = ref(false)
 
 const messagesEl = ref(null)
 let unsubscribe = null
+let persistTimer = null
+let initialized = false
 
 const suggestions = [
   '帮我写一段天马行空的文章',
@@ -47,7 +51,8 @@ function toggleReasoning(i) {
 // 标题：流式中显示"思考中…"，完成后显示"已思考 (X 秒)"
 function reasoningTitle(m, i) {
   const isThinking =
-    streaming.value && m.role === 'assistant' && !m.content && activeSession.value?.messages[i] === m
+    streamingSessionId.value === activeSession.value?.id &&
+    m.role === 'assistant' && !m.content && activeSession.value?.messages[i] === m
   if (isThinking) return '思考中…'
   return `已思考 (${reasoningSeconds(m)} 秒)`
 }
@@ -65,19 +70,38 @@ async function persist() {
   await api.dbSet('sessions', sessions.value)
 }
 
+function schedulePersist() {
+  if (persistTimer) return
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    persist().catch(() => {})
+  }, 100)
+}
+
+function flushPersist() {
+  clearTimeout(persistTimer)
+  persistTimer = null
+  return persist()
+}
+
+async function refreshProviders() {
+  const next = (await api.providerGetAll()) || []
+  providers.value = next
+  const selected = next.find((p) => p.id === providerId.value) || next[0]
+  providerId.value = selected?.id || ''
+  if (!selected?.models?.includes(model.value)) model.value = selected?.models?.[0] || ''
+}
+
 async function load() {
-  providers.value = (await api.providerGetAll()) || []
   sessions.value = (await api.dbGet('sessions')) || []
   const settings = (await api.dbGet('settings')) || {}
   thinkingLevel.value = settings.thinkingLevel || 'medium'
-  if (!providers.value.length) return
-  providerId.value = providers.value[0].id
-  model.value = providers.value[0].models?.[0] || ''
+  await refreshProviders()
 }
 
 function setThinkingLevel(v) {
   thinkingLevel.value = v
-  api.dbGet('settings').then((s) => api.dbSet('settings', { ...(s || {}), thinkingLevel: v }))
+  api.patchSettings({ thinkingLevel: v })
 }
 
 function newSession() {
@@ -124,6 +148,7 @@ async function removeSession(s) {
 }
 
 async function send() {
+  if (streaming.value || requestPending.value) return
   const text = input.value.trim()
   if (!text) return
   if (!activeProvider.value) {
@@ -146,40 +171,59 @@ async function send() {
 
 // 基于会话现有消息（最后一条为用户新输入）向上游发起补全
 async function startCompletion(s) {
+  if (streaming.value || requestPending.value) return
   streaming.value = true
   streamingSessionId.value = s.id
-  await persist()
-  scrollToBottom()
+  stopping.value = false
+  requestPending.value = true
 
+  const requestProvider = providers.value.find((p) => p.id === s.providerId)
+  const requestModel = s.model || model.value
   const payloadMessages = s.messages
     .filter((m) => m.role !== 'assistant' || m.content)
     .map((m) => ({ role: m.role, content: m.content }))
 
   try {
+    await persist()
+    if (stopping.value) {
+      finishStreaming(s.id)
+      const last = s.messages[s.messages.length - 1]
+      if (last?.role === 'assistant' && !last.content && !last.reasoning) last.content = '（已停止）'
+      await persist().catch(() => {})
+      return
+    }
+    scrollToBottom()
     const res = await api.chatSend({
       sessionId: s.id,
-      provider: activeProvider.value,
-      model: s.model || model.value,
+      provider: requestProvider,
+      model: requestModel,
       messages: payloadMessages,
       thinkingLevel: thinkingLevel.value
     })
 
     // 主进程直接拒绝（如未配置 Key）时此前是静默失败，这里显式呈现
-    if (res && res.ok === false) {
-      streaming.value = false
-      streamingSessionId.value = null
+    if (res && res.ok === false && finishStreaming(s.id)) {
       const last = s.messages[s.messages.length - 1]
       if (last?.role === 'assistant') last.content = `[错误] ${res.message}`
-      persist()
+      await persist().catch(() => {})
     }
   } catch (err) {
-    streaming.value = false
-    streamingSessionId.value = null
+    if (!finishStreaming(s.id)) return
     const last = s.messages[s.messages.length - 1]
     if (last?.role === 'assistant') last.content = `[错误] ${String(err)}`
-    persist()
+    await persist().catch(() => {})
     ElMessage.error({ message: `发送失败：${String(err)}`, duration: 10000 })
+  } finally {
+    requestPending.value = false
   }
+}
+
+function finishStreaming(sessionId) {
+  if (streamingSessionId.value !== sessionId) return false
+  streaming.value = false
+  streamingSessionId.value = null
+  stopping.value = false
+  return true
 }
 
 // 气泡原位编辑：撤回该消息之后的内容，编辑后从该消息重新发送
@@ -188,7 +232,7 @@ const editingText = ref('')
 
 function startEdit(idx) {
   const s = activeSession.value
-  if (!s || streaming.value) return
+  if (!s || streaming.value || requestPending.value) return
   const m = s.messages[idx]
   if (!m || m.role !== 'user') return
   editingIndex.value = idx
@@ -201,6 +245,7 @@ function cancelEdit() {
 }
 
 async function resendEdit() {
+  if (streaming.value || requestPending.value) return
   const s = activeSession.value
   const idx = editingIndex.value
   if (!s || idx === null) return
@@ -216,20 +261,16 @@ async function resendEdit() {
   startCompletion(s)
 }
 
-function stop() {
+async function stop() {
   // 停止"正在流式输出"的那个会话，而非当前选中的会话
   const sid = streamingSessionId.value || activeSession.value?.id
-  if (!sid) return
-  api.chatAbort(sid)
-
-  // 乐观更新：立即结束流式状态，保留已收到的部分内容
-  streaming.value = false
-  streamingSessionId.value = null
-  const s = sessions.value.find((x) => x.id === sid)
-  if (s) {
-    const last = s.messages[s.messages.length - 1]
-    if (last?.role === 'assistant' && !last.content && !last.reasoning) last.content = '（已停止）'
-    persist()
+  if (!sid || stopping.value) return
+  stopping.value = true
+  try {
+    await api.chatAbort(sid)
+  } catch (err) {
+    stopping.value = false
+    ElMessage.error({ message: `停止失败：${String(err)}`, duration: 10000 })
   }
 }
 
@@ -242,58 +283,81 @@ async function scrollToBottom() {
   if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
 }
 
-onMounted(() => {
-  load()
-  unsubscribe = api.onChatChunk((chunk) => {
-    const { sessionId, type, delta, message } = chunk
-    const s = sessions.value.find((x) => x.id === sessionId)
-    if (!s) return
-    const last = s.messages[s.messages.length - 1]
-    if (type === 'delta' && delta) {
-      if (last?.role === 'assistant') {
-        // 首条回答到达：关闭思考计时
-        if (last.reasoning && !last.reasoningElapsed) {
-          last.reasoningEndAt = Date.now()
-          if (last.reasoningStartAt) {
-            last.reasoningElapsed = Math.max(1, Math.round((last.reasoningEndAt - last.reasoningStartAt) / 1000))
-          }
-        }
-        last.content += delta
-        scrollToBottom()
-      }
-    } else if (type === 'reasoning' && delta) {
-      // GLM / DeepSeek 等思考型模型先输出 reasoning_content
-      if (last?.role === 'assistant') {
-        if (!last.reasoningStartAt) last.reasoningStartAt = Date.now()
-        last.reasoning = (last.reasoning || '') + delta
-        scrollToBottom()
-      }
-    } else if (type === 'error') {
-      if (last?.role === 'assistant' && !last.content) last.content = `[错误] ${message}`
-      else s.messages.push({ role: 'assistant', content: `[错误] ${message}` })
-      streaming.value = false
-      persist()
-    } else if (type === 'done') {
-      streaming.value = false
-      streamingSessionId.value = null
-      if (last?.role === 'assistant') {
-        if (last.reasoning && !last.reasoningEndAt) {
-          last.reasoningEndAt = Date.now()
-          if (last.reasoningStartAt) {
-            last.reasoningElapsed = Math.max(1, Math.round((last.reasoningEndAt - last.reasoningStartAt) / 1000))
-          }
-        }
-        if (!last.content && !last.reasoning) {
-          // 中止且未收到任何内容时标记为已停止
-          last.content = chunk.aborted ? '（已停止）' : '（空响应，请检查 Provider 与模型配置）'
+function handleChunk(chunk) {
+  const { sessionId, type, delta, message } = chunk
+  if (sessionId !== streamingSessionId.value) return
+  const s = sessions.value.find((x) => x.id === sessionId)
+  if (!s) {
+    if (type === 'error' || type === 'done') finishStreaming(sessionId)
+    return
+  }
+  const last = s.messages[s.messages.length - 1]
+  if (type === 'delta' && delta) {
+    if (last?.role === 'assistant') {
+      // 首条回答到达：关闭思考计时
+      if (last.reasoning && !last.reasoningElapsed) {
+        last.reasoningEndAt = Date.now()
+        if (last.reasoningStartAt) {
+          last.reasoningElapsed = Math.max(1, Math.round((last.reasoningEndAt - last.reasoningStartAt) / 1000))
         }
       }
-      persist()
+      last.content += delta
+      schedulePersist()
+      scrollToBottom()
     }
-  })
+  } else if (type === 'reasoning' && delta) {
+    // GLM / DeepSeek 等思考型模型先输出 reasoning_content
+    if (last?.role === 'assistant') {
+      if (!last.reasoningStartAt) last.reasoningStartAt = Date.now()
+      last.reasoning = (last.reasoning || '') + delta
+      schedulePersist()
+      scrollToBottom()
+    }
+  } else if (type === 'error') {
+    if (last?.role === 'assistant' && !last.content) last.content = `[错误] ${message}`
+    else s.messages.push({ role: 'assistant', content: `[错误] ${message}` })
+    finishStreaming(sessionId)
+    flushPersist()
+  } else if (type === 'done') {
+    finishStreaming(sessionId)
+    if (last?.role === 'assistant') {
+      if (last.reasoning && !last.reasoningEndAt) {
+        last.reasoningEndAt = Date.now()
+        if (last.reasoningStartAt) {
+          last.reasoningElapsed = Math.max(1, Math.round((last.reasoningEndAt - last.reasoningStartAt) / 1000))
+        }
+      }
+      if (!last.content && !last.reasoning) {
+        // 中止且未收到任何内容时标记为已停止
+        last.content = chunk.aborted ? '（已停止）' : '（空响应，请检查 Provider 与模型配置）'
+      }
+    }
+    flushPersist()
+  }
+}
+
+function handleBeforeUnload() {
+  flushPersist()
+}
+
+onMounted(async () => {
+  unsubscribe = api.onChatChunk(handleChunk)
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  await load()
+  initialized = true
 })
 
-onUnmounted(() => unsubscribe?.())
+onActivated(() => {
+  if (initialized) refreshProviders()
+})
+
+onDeactivated(flushPersist)
+
+onUnmounted(() => {
+  unsubscribe?.()
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  flushPersist()
+})
 </script>
 
 <template>
@@ -359,7 +423,7 @@ onUnmounted(() => unsubscribe?.())
               </div>
               <template v-else>
                 <div class="msg-content">{{ m.content }}<span
-                    v-if="streaming && m.role === 'assistant' && i === activeSession.messages.length - 1"
+                    v-if="streamingSessionId === activeSession.id && m.role === 'assistant' && i === activeSession.messages.length - 1"
                     class="caret"
                   /></div>
                 <div
@@ -397,7 +461,7 @@ onUnmounted(() => unsubscribe?.())
             />
             <div class="input-foot">
               <span class="input-hint">Enter 发送 / Shift+Enter 换行</span>
-              <el-button v-if="streaming" :icon="VideoPause" @click="stop">停止</el-button>
+              <el-button v-if="streaming" :icon="VideoPause" :loading="stopping" @click="stop">停止</el-button>
               <el-button v-else type="primary" :icon="Promotion" @click="send">发送</el-button>
             </div>
           </div>

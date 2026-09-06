@@ -1,5 +1,5 @@
-import { APPDATA, USERPROFILE, exists, firstExists, commandExists } from './base'
-import { mergeYamlAgentProviders } from './agent-config'
+import { APPDATA, USERPROFILE, exists, firstExists, commandExists } from './base.js'
+import { mergeYamlAgentProviders } from './agent-config.js'
 
 /** MiniMax Code：模型配置注入到 ~/.minimax/config.yaml（YAML） */
 const minimax_code = {
@@ -25,8 +25,8 @@ const minimax_code = {
   async launch() {
     return { ok: false, message: 'MiniMax Code 为 CLI 工具，请在终端中启动' }
   },
-  async configureModel({ models }) {
-    return mergeYamlAgentProviders(this.configPath(), { models }, ['providers'])
+  async configureModel({ models, model, token }) {
+    return mergeYamlAgentProviders(this.configPath(), { models, model, token }, ['providers'])
   }
 }
 

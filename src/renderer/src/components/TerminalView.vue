@@ -20,6 +20,11 @@ let lastRows = 0
 let offData
 let offExit
 let inputDisposable
+let nextOffset = 0
+let ready = false
+let disposed = false
+let deferred = []
+let recovery = null
 
 function flushWrite() {
   writeFrame = null
@@ -34,6 +39,48 @@ function enqueueWrite(data) {
   if (!data) return
   pendingData += data
   if (!writeFrame) writeFrame = requestAnimationFrame(flushWrite)
+}
+
+function applyChunk(chunk, allowTruncated = false) {
+  if (!chunk?.data) {
+    if (Number.isFinite(chunk?.endOffset)) nextOffset = Math.max(nextOffset, chunk.endOffset)
+    return true
+  }
+  if (!Number.isFinite(chunk.startOffset) || !Number.isFinite(chunk.endOffset)) {
+    enqueueWrite(chunk.data)
+    return true
+  }
+  if (chunk.endOffset <= nextOffset) return true
+  if (chunk.startOffset > nextOffset) {
+    if (!allowTruncated && !chunk.truncated) return false
+    nextOffset = chunk.startOffset
+  }
+  enqueueWrite(chunk.data.slice(Math.max(0, nextOffset - chunk.startOffset)))
+  nextOffset = chunk.endOffset
+  return true
+}
+
+function acceptChunk(chunk) {
+  if (!ready || recovery) {
+    deferred.push(chunk)
+    return
+  }
+  if (!applyChunk(chunk)) {
+    deferred.push(chunk)
+    recoverGap()
+  }
+}
+
+async function recoverGap() {
+  if (recovery || disposed) return
+  recovery = api.ptyBuffer(props.id, nextOffset)
+  const chunk = await recovery.catch(() => null)
+  recovery = null
+  if (disposed || !chunk) return
+  applyChunk(chunk, true)
+  const queued = deferred
+  deferred = []
+  for (const item of queued) acceptChunk(item)
 }
 
 function resize() {
@@ -53,9 +100,8 @@ function scheduleResize() {
   }, 100)
 }
 
-watch(() => props.visible, async (visible) => {
+watch(() => props.visible, (visible) => {
   if (!visible) return
-  enqueueWrite(await api.ptyBuffer(props.id))
   requestAnimationFrame(resize)
 })
 
@@ -71,11 +117,16 @@ onMounted(async () => {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.open(host.value)
-  offData = api.onPtyData(({ id, data }) => { if (id === props.id && props.visible) enqueueWrite(data) })
+  offData = api.onPtyData((chunk) => { if (chunk.id === props.id) acceptChunk(chunk) })
   offExit = api.onPtyExit(({ id, exitCode }) => { if (id === props.id) enqueueWrite(`\r\n[进程已退出: ${exitCode}]\r\n`) })
   inputDisposable = term.onData((data) => api.ptyInput(props.id, data))
-  const buffered = await api.ptyBuffer(props.id)
-  enqueueWrite(buffered)
+  const buffered = await api.ptyBuffer(props.id, 0)
+  if (disposed) return
+  applyChunk(buffered, true)
+  ready = true
+  const queued = deferred
+  deferred = []
+  for (const chunk of queued) acceptChunk(chunk)
   observer = new ResizeObserver(scheduleResize)
   observer.observe(host.value)
   resize()
@@ -89,11 +140,14 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  ready = false
   observer?.disconnect()
   clearTimeout(resizeTimer)
   if (resizeFrame) cancelAnimationFrame(resizeFrame)
   if (writeFrame) cancelAnimationFrame(writeFrame)
   pendingData = ''
+  deferred = []
   offData?.()
   offExit?.()
   inputDisposable?.dispose()

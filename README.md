@@ -15,6 +15,7 @@
 ```bash
 npm install
 npm run dev      # 开发模式
+npm test         # 隔离回归测试，不读取真实密钥或调用真实模型
 npm run build    # 构建
 npm run dist     # 打包安装程序（electron-builder）
 ```
@@ -37,3 +38,11 @@ src/
 - 渲染进程 `contextIsolation: true`，`nodeIntegration: false`，所有系统能力通过 preload 白名单 IPC 暴露
 - API Key 与会话数据保存在本地 `userData`（electron-store），不上传任何服务器
 - 注入 MCP 前自动备份目标配置文件
+
+模型代理使用每次安装独立的随机访问令牌。升级旧版本后，请在各 Harness 的「配置模型」中重新保存并重启 Harness；旧版固定令牌不再接受。模型路由按保存的选择恢复，同名模型不能同时绑定不同提供商，未知模型会明确报错。
+
+配置文件无法解析时会停止写入。首次 `.openharness.bak` 备份保留不覆盖，写入通过同目录临时文件替换完成。TOML 配置只修改目标字段，保存时可能规范化排版与注释。
+
+同协议请求保留上游流式输出；OpenAI / Anthropic 跨协议转换目前先取得完整响应，再输出包含工具调用的对应 SSE 事件，不提供逐 token 实时转换。
+
+`test-model.mjs`、`test-edit.mjs`、`test-ui.mjs` 是需手动运行的真实模型诊断，会使用本机 Provider 并可能产生费用，不属于 `npm test`。其中 UI 诊断只在内存中保存测试数据。

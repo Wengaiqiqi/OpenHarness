@@ -71,9 +71,7 @@ async function doInject() {
 }
 
 onMounted(() => {
-  if (autoScanned) return
-  autoScanned = true
-  load()
+  if (!autoScanned) { autoScanned = true; load() }
   // 后台静默刷新完成 → 无痕更新本页状态
   offUpdated = api.onHarnessUpdated((list) => applyList(list || []))
 })
@@ -225,6 +223,8 @@ function clearSelection() {
       style="aspect-ratio: 16 / 9; display: flex; flex-direction: column"
     >
       <div class="cfg-alert">
+        <p v-if="['codex', 'kimi-code', 'grok-build'].includes(cfgTarget?.id)">TOML 配置会规范化排版和注释，原文件保留在备份中。</p>
+        <p v-if="proxyInfo?.needsReconfigure">代理安全设置已升级，请重新保存各 Harness 的模型配置并重启该 Harness。</p>
         通过内置本地代理（127.0.0.1:18200）使用「模型服务」里的模型<span v-if="proxyInfo?.running" class="cfg-dot" />
       </div>
       <div v-if="cfgHistoryText" class="cfg-history">

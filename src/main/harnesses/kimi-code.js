@@ -1,5 +1,5 @@
-import { APPDATA, LOCALAPPDATA, USERPROFILE, exists, firstExists, commandExists } from './base'
-import { mergeTomlProvider } from './agent-config'
+import { APPDATA, LOCALAPPDATA, USERPROFILE, exists, firstExists, commandExists } from './base.js'
+import { mergeTomlProvider } from './agent-config.js'
 
 /** Kimi Code：模型配置注入到 ~/.kimi-code/config.toml（TOML） */
 const kimi_code = {
@@ -25,8 +25,8 @@ const kimi_code = {
   async launch() {
     return { ok: false, message: 'Kimi Code 为 CLI 工具，请在终端中启动' }
   },
-  async configureModel({ model }) {
-    return mergeTomlProvider(this.configPath(), { model })
+  async configureModel({ models, model, token }) {
+    return mergeTomlProvider(this.configPath(), { models, model, token })
   }
 }
 

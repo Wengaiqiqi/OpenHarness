@@ -1,5 +1,5 @@
-import { APPDATA, USERPROFILE, exists, firstExists, launchExe } from './base'
-import { mergeJsonAgentProviders, mergeOpencodeMcp } from './agent-config'
+import { APPDATA, USERPROFILE, exists, firstExists, launchExe } from './base.js'
+import { mergeJsonAgentProviders, mergeOpencodeMcp } from './agent-config.js'
 
 /** OpenCode Desktop（ai.opencode.desktop，Electron）：桌面 AI 编码 Agent */
 const opencode = {
@@ -38,9 +38,9 @@ const opencode = {
     const p = this.configPath() || this.configCandidates[0]
     return mergeOpencodeMcp(p, servers)
   },
-  async configureModel({ models }) {
+  async configureModel({ models, model, token }) {
     const p = this.configPath() || this.configCandidates[0]
-    return mergeJsonAgentProviders(p, { models })
+    return mergeJsonAgentProviders(p, { models, model, token })
   }
 }
 

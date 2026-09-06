@@ -1,4 +1,4 @@
-import { LOCALAPPDATA, firstExists, injectMcpIntoFile, launchExe } from './base'
+import { LOCALAPPDATA, firstExists, injectMcpIntoFile, launchExe } from './base.js'
 
 const claudeDesktop = {
   id: 'claude-desktop',

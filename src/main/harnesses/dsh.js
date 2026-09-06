@@ -1,5 +1,5 @@
-import { USERPROFILE, exists, firstExists, commandExists } from './base'
-import { mergeYamlAgentProviders } from './agent-config'
+import { USERPROFILE, exists, firstExists, commandExists } from './base.js'
+import { mergeYamlAgentProviders } from './agent-config.js'
 
 /** DeepSeek Harness (DSH)：模型配置注入到 ~/.dsh/settings.yaml（YAML，llm-pi-ai.providers 路径） */
 const dsh = {
@@ -25,8 +25,8 @@ const dsh = {
   async launch() {
     return { ok: false, message: 'DeepSeek Harness 为 CLI 工具，请在终端中启动' }
   },
-  async configureModel({ models }) {
-    return mergeYamlAgentProviders(this.configPath(), { models }, ['llm-pi-ai', 'providers'])
+  async configureModel({ models, model, token }) {
+    return mergeYamlAgentProviders(this.configPath(), { models, model, token }, ['llm-pi-ai', 'providers'])
   }
 }
 

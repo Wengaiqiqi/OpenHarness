@@ -1,4 +1,4 @@
-import { APPDATA, LOCALAPPDATA, firstExists, launchExe } from './base'
+import { APPDATA, LOCALAPPDATA, firstExists, launchExe } from './base.js'
 
 /** CherryStudio：结构为 Electron store，不适合直接注入，仅检测 + 启动 */
 const cherry = {

@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process'
  *   findcon|<title>            -> con:<hwnd>:<vis> 按标题子串找控制台窗口（EnumWindows，能找到隐藏窗口）
  *   findnames|<csv>            -> hwnd:<val> 按进程名找主窗口（EnumWindows，能找到隐藏窗口）
  *
- * 需要响应的指令与输出按 FIFO 对应；move/show 无输出，不占用队列。
+ * 指令/输出附带请求 ID；move/show 使用 ID 0，不产生响应。
  */
 
 const PS_SCRIPT = `
@@ -42,6 +42,7 @@ public class OHWin {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   public struct POINT { public int X; public int Y; }
 }
@@ -52,9 +53,14 @@ Add-Type -TypeDefinition $def
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   if ([string]::IsNullOrWhiteSpace($line)) { continue }
-  $p = $line.Split('|')
+  $frame = $line -split '\\|', 2
+  if ($frame.Length -ne 2) { continue }
+  $requestId = $frame[0]
+  $p = $frame[1].Split('|')
   try {
+    $result = & {
     switch ($p[0]) {
+      'close'    { Write-Output ('close:' + [OHWin]::PostMessage([IntPtr][long]$p[1], 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) }
       'getstyle'  { Write-Output ('style:' + [OHWin]::GetWindowLong([IntPtr][long]$p[1], -16)) }
       'setparent' { $old = [OHWin]::SetParent([IntPtr][long]$p[1], [IntPtr][long]$p[2]); Write-Output ('old:' + $old) }
       'style'     { $old = [OHWin]::GetWindowLong([IntPtr][long]$p[1], -16); [OHWin]::SetWindowLong([IntPtr][long]$p[1], -16, [int]$p[2]) | Out-Null; Write-Output ('style:' + $old) }
@@ -228,74 +234,77 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                     Write-Output ('hwnd:' + [long]$best)
                   }
     }
-  } catch { Write-Output ('err:' + $p[0] + ':' + $_.Exception.Message) }
+    }
+    if ($requestId -ne '0') {
+      $reply = @($result)[0]
+      if ($null -eq $reply) { $reply = 'ok:' }
+      Write-Output ($requestId + '|' + $reply)
+    }
+  } catch {
+    if ($requestId -ne '0') { Write-Output ($requestId + '|err:' + $p[0] + ':' + $_.Exception.Message) }
+  }
 }
 `
 
 class Win32Bridge {
   constructor() {
     this.proc = null
-    this.queue = [] // FIFO resolver，只给需要响应的指令用
+    this.queue = new Map()
+    this.nextId = 1
     this.buffer = ''
   }
 
   ensure() {
     if (this.proc && !this.proc.killed) return this.proc
     this.buffer = ''
-    this.proc = spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_SCRIPT],
-      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
-    )
-    this.proc.stdout.setEncoding('utf-8')
-    this.proc.stdout.on('data', (chunk) => {
+    const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_SCRIPT],
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    this.proc = proc
+    proc.stdout.setEncoding('utf-8')
+    proc.stdout.on('data', (chunk) => {
+      if (this.proc !== proc) return
       this.buffer += chunk
       let idx
       while ((idx = this.buffer.indexOf('\n')) >= 0) {
         const line = this.buffer.slice(0, idx).trim()
         this.buffer = this.buffer.slice(idx + 1)
         if (!line) continue
-        const resolve = this.queue.shift()
-        if (resolve) resolve(line)
+        const separator = line.indexOf('|')
+        if (separator < 0) continue
+        const id = Number(line.slice(0, separator))
+        const resolve = this.queue.get(id)
+        this.queue.delete(id)
+        if (resolve) resolve(line.slice(separator + 1))
       }
     })
-    this.proc.stderr.setEncoding('utf-8')
-    this.proc.stderr.on('data', () => {})
-    this.proc.on('exit', () => {
-      this.proc = null
-      const pending = this.queue
-      this.queue = []
-      pending.forEach((r) => r('err:bridge-exited'))
-    })
+    proc.stderr.setEncoding('utf-8')
+    proc.stderr.on('data', () => {})
+    const failed = () => { if (this.proc === proc) this.dispose() }
+    proc.on('exit', failed)
+    proc.on('error', failed)
+    proc.stdin.on('error', failed)
     return this.proc
   }
 
-  /** 发送需要响应的指令（响应按 FIFO 对应）；写入失败自动重连 */
+  /** 请求按 ID 匹配；迟到的响应不会消耗后续请求。 */
   send(...parts) {
-    this.ensure()
     return new Promise((resolve) => {
+      const id = this.nextId++
       const timeout = setTimeout(() => {
-        const i = this.queue.indexOf(entry)
-        if (i >= 0) this.queue.splice(i, 1)
+        this.queue.delete(id)
         resolve('err:timeout')
       }, 8000)
       const entry = (line) => {
         clearTimeout(timeout)
         resolve(line)
       }
-      this.queue.push(entry)
+      this.queue.set(id, entry)
       try {
-        if (this.proc && this.proc.stdin.writable) {
-          this.proc.stdin.write(parts.join('|') + '\n')
-        } else {
-          this.proc = null
-          this.ensure()
-          this.proc.stdin.write(parts.join('|') + '\n')
-        }
+        const proc = this.ensure()
+        if (!proc.stdin.writable) throw new Error('bridge not writable')
+        proc.stdin.write(id + '|' + parts.join('|') + '\n')
       } catch {
-        this.proc = null
-        clearTimeout(timeout)
-        resolve('err:write-failed')
+        this.dispose()
       }
     })
   }
@@ -305,11 +314,9 @@ class Win32Bridge {
     try {
       this.ensure()
       if (this.proc && this.proc.stdin.writable) {
-        this.proc.stdin.write(parts.join('|') + '\n')
+        this.proc.stdin.write('0|' + parts.join('|') + '\n')
       } else {
-        this.proc = null
-        this.ensure()
-        this.proc.stdin.write(parts.join('|') + '\n')
+        this.dispose()
       }
     } catch {
       /* 下一次调用会自动重连 */
@@ -317,11 +324,13 @@ class Win32Bridge {
   }
 
   dispose() {
-    if (this.proc) {
-      try { this.proc.stdin.end() } catch {}
-      this.proc.kill()
-      this.proc = null
-    }
+    const proc = this.proc
+    this.proc = null
+    this.buffer = ''
+    for (const resolve of this.queue.values()) resolve('err:bridge-exited')
+    this.queue.clear()
+    try { proc?.stdin.end() } catch {}
+    try { proc?.kill() } catch {}
   }
 }
 

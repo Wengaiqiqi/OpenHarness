@@ -1,4 +1,4 @@
-import { APPDATA, LOCALAPPDATA, injectMcpIntoFile, launchExe, firstExists } from './base'
+import { APPDATA, LOCALAPPDATA, injectMcpIntoFile, launchExe, firstExists } from './base.js'
 
 const vscode = {
   id: 'vscode',

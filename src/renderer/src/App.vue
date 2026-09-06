@@ -57,7 +57,11 @@ onMounted(() => store.init())
       </div>
     </aside>
     <main class="app-main">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <KeepAlive include="ChatView">
+          <component :is="Component" />
+        </KeepAlive>
+      </router-view>
     </main>
   </div>
 </template>

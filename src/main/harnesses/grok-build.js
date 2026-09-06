@@ -1,5 +1,5 @@
-import { USERPROFILE, exists, firstExists, commandExists } from './base'
-import { mergeTomlProvider } from './agent-config'
+import { USERPROFILE, exists, firstExists, commandExists } from './base.js'
+import { mergeTomlProvider } from './agent-config.js'
 
 /** Grok Build：模型配置注入到 ~/.grok/config.toml（TOML） */
 const grok_build = {
@@ -30,8 +30,8 @@ const grok_build = {
   async launch() {
     return { ok: false, message: 'Grok Build 为 CLI 工具，请在终端中启动' }
   },
-  async configureModel({ models, model }) {
-    return mergeTomlProvider(this.configPath(), { model })
+  async configureModel({ models, model, token }) {
+    return mergeTomlProvider(this.configPath(), { models, model, token })
   }
 }
 

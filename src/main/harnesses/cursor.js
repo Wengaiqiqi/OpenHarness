@@ -1,4 +1,4 @@
-import { LOCALAPPDATA, USERPROFILE, injectMcpIntoFile, launchExe, firstExists } from './base'
+import { LOCALAPPDATA, USERPROFILE, injectMcpIntoFile, launchExe, firstExists } from './base.js'
 
 const cursor = {
   id: 'cursor',

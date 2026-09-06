@@ -38,22 +38,35 @@ function commandFor(command) {
 }
 
 function flush(id) {
-  const data = pending.get(id) || ''
-  pending.set(id, '')
+  const chunk = pending.get(id)
+  if (!chunk) return
+  pending.set(id, { data: '', startOffset: chunk.endOffset, endOffset: chunk.endOffset })
   timers.delete(id)
-  if (data) send('pty:data', { id, data })
+  if (chunk.data) send('pty:data', { id, ...chunk })
 }
 
 function queueOutput(id, data) {
-  const buffer = (buffers.get(id) || '') + data
-  buffers.set(id, buffer.length > BUFFER_LIMIT ? buffer.slice(-BUFFER_LIMIT) : buffer)
-  const queued = (pending.get(id) || '') + data
-  if (queued.length >= FLUSH_LIMIT) {
+  const buffer = buffers.get(id)
+  if (!buffer) return
+  const dataStart = buffer.endOffset
+  buffer.data += data
+  buffer.endOffset += data.length
+  if (buffer.data.length > BUFFER_LIMIT) {
+    const removed = buffer.data.length - BUFFER_LIMIT
+    buffer.data = buffer.data.slice(removed)
+    buffer.startOffset += removed
+  }
+
+  const queued = pending.get(id)
+  if (!queued) return
+  if (!queued.data) queued.startOffset = dataStart
+  queued.data += data
+  queued.endOffset = buffer.endOffset
+  if (queued.data.length >= FLUSH_LIMIT) {
     if (timers.has(id)) clearTimeout(timers.get(id))
     flush(id)
     return
   }
-  pending.set(id, queued)
   if (!timers.has(id)) timers.set(id, setTimeout(() => flush(id), FLUSH_MS))
 }
 
@@ -71,10 +84,13 @@ export function open(id, exe, cols = 80, rows = 24) {
   const env = { ...process.env, FORCE_COLOR: '1', COLORTERM: 'truecolor', TERM: 'xterm-256color' }
   const session = pty.spawn(cmd.file, cmd.args, { name: 'xterm-256color', cols, rows, cwd: os.homedir(), env })
   sessions.set(id, session)
-  buffers.set(id, '')
-  pending.set(id, '')
-  session.onData((data) => queueOutput(id, data))
+  buffers.set(id, { data: '', startOffset: 0, endOffset: 0 })
+  pending.set(id, { data: '', startOffset: 0, endOffset: 0 })
+  session.onData((data) => {
+    if (sessions.get(id) === session) queueOutput(id, data)
+  })
   session.onExit(({ exitCode }) => {
+    if (sessions.get(id) !== session) return
     flush(id)
     sessions.delete(id)
     clearSessionState(id)
@@ -96,7 +112,9 @@ export function openSilent(id, command) {
     const env = { ...process.env, FORCE_COLOR: '1', COLORTERM: 'truecolor', TERM: 'xterm-256color' }
     const session = pty.spawn(cmd.file, cmd.args, { name: 'xterm-256color', cols: 80, rows: 24, cwd: os.homedir(), env })
     session.onData(() => {}) // 输出丢弃
-    session.onExit(() => silentHosts.delete(id))
+    session.onExit(() => {
+      if (silentHosts.get(id) === session) silentHosts.delete(id)
+    })
     silentHosts.set(id, session)
     return { ok: true, mode: 'silent', pid: session.pid }
   } catch (err) {
@@ -116,10 +134,16 @@ export function silentIds() { return [...silentHosts.keys()] }
 
 export function input(id, data) { sessions.get(id)?.write(data) }
 export function resize(id, cols, rows) { sessions.get(id)?.resize(Math.max(2, cols), Math.max(2, rows)) }
-export function readBuffer(id) {
-  const data = buffers.get(id) || ''
-  buffers.set(id, '')
-  return data
+export function readBuffer(id, afterOffset = 0) {
+  const buffer = buffers.get(id) || { data: '', startOffset: 0, endOffset: 0 }
+  const requested = Number.isFinite(afterOffset) ? Math.max(0, afterOffset) : 0
+  const startOffset = Math.min(buffer.endOffset, Math.max(requested, buffer.startOffset))
+  return {
+    data: buffer.data.slice(startOffset - buffer.startOffset),
+    startOffset,
+    endOffset: buffer.endOffset,
+    truncated: requested < buffer.startOffset
+  }
 }
 
 export function close(id) {
@@ -127,9 +151,11 @@ export function close(id) {
   if (!session) return
   const pid = session.pid
   session.kill()
-  flush(id)
-  sessions.delete(id)
-  clearSessionState(id)
+  if (sessions.get(id) === session) {
+    flush(id)
+    sessions.delete(id)
+    clearSessionState(id)
+  }
   if (activeId === id) activeId = null
   if (latestId === id) latestId = null
   if (pid) execFile('taskkill', ['/T', '/F', '/PID', String(pid)]).catch(() => {})

@@ -541,6 +541,7 @@ let allowedRect = null
 // 最近一次 allowedRect：离开工作台（停靠全部窗口）后仍保留，供 showActive 恢复基准
 let lastAllowedRect = null
 let clipTimer = null
+let clipBusy = false
 
 function safeWarn(...a) {
   // 日志绝不能抛异常阻断拉回逻辑
@@ -577,12 +578,15 @@ export function setClipRect(rect) {
 
 async function clipTick() {
   const a = attached.get(activeId)
-  if (!a || !allowedRect) return
+  const rect = allowedRect
+  if (!a || !rect || clipBusy) return
+  clipBusy = true
   try {
     const [originLine, rectLine] = await Promise.all([
       bridge.send('clientorigin', a.parentHwnd),
       bridge.send('getrect', a.hwnd)
     ])
+    if (attached.get(activeId) !== a || allowedRect !== rect || a.parked) return
     const [, ox, oy] = /^origin:(-?\d+),(-?\d+)$/.exec(originLine) || []
     const [, l, t, r, b] = /^rect:(-?\d+),(-?\d+),(-?\d+),(-?\d+)$/.exec(rectLine) || []
     if (ox === undefined || l === undefined) {
@@ -614,6 +618,8 @@ async function clipTick() {
     }
   } catch (e) {
     safeWarn('[clipTick] 异常:', String(e))
+  } finally {
+    clipBusy = false
   }
 }
 
@@ -629,8 +635,10 @@ export async function release(harnessId) {
   const a = attached.get(id)
   if (!a) return
   bridge.fire('clearrgn', a.hwnd)
-  await bridge.send('style', a.hwnd, a.origStyle)
-  await bridge.send('setparent', a.hwnd, 0)
+  const restored = await bridge.send('style', a.hwnd, toInt32(a.origStyle))
+  if (!restored.startsWith('style:')) throw new Error('无法恢复外部窗口样式: ' + restored)
+  const detached = await bridge.send('setparent', a.hwnd, 0)
+  if (!detached.startsWith('old:')) throw new Error('无法释放外部窗口: ' + detached)
   // 转独立窗口：若它正停靠在屏幕外，摆回屏幕上（位置用上次容器矩形近似）
   if (a.lastRect) {
     bridge.fire(
@@ -647,9 +655,10 @@ export async function release(harnessId) {
   }
 }
 
-/** 关闭指定（默认当前激活的）嵌入：静默杀掉应用进程树并清理登记，全程无窗口闪现 */
+/** 原生应用走正常关闭，保留其保存提示；自建终端/服务仍结束宿主。 */
 export async function closeAndKill(harnessId) {
   const id = harnessId || activeId
+  clearLatestIf(id)
   // Web 型 harness：杀服务进程树（按端口反查 PID），并结束 ConPTY 隐藏宿主。
   // 杀进程可能耗时数秒（netstat/taskkill），全部放后台执行，绝不拖住 IPC 让 UI 等待
   if (webServices.has(id)) {
@@ -669,26 +678,14 @@ export async function closeAndKill(harnessId) {
   }
   const a = attached.get(id)
   if (!a) return
-  // PID 必须在脱离前查：脱离后 hwnd 仍有效但窗口已变独立窗口
-  const pidLine = await bridge.send('pidof', a.hwnd)
-  const pid = /^pid:(\d+)$/.exec(pidLine || '')?.[1]
-  // 静默关闭：先杀进程，再做清理。绝不能走 release()——它会把窗口摆回屏幕并
-  // SW_RESTORE「转独立窗口」，进程还没死透就闪出一个独立弹窗。
-  // 也不要 setparent(0)：脱离会让窗口在进程死亡前的瞬间变回独立窗口；
-  // 保持子窗口状态随进程直接销毁，全程无感
-  if (pid) {
-    exec('taskkill', ['/T', '/F', '/PID', pid]).catch(() => {})
-  }
-  bridge.fire('clearrgn', a.hwnd)
-  attached.delete(id)
-  if (activeId === id) {
-    activeId = null
-    setClipRect(null)
-  }
+  await release(id)
+  const result = await bridge.send('close', a.hwnd)
+  if (result !== 'close:True') throw new Error('应用已转为独立窗口，请手动关闭')
 }
 
 /** 释放全部嵌入（应用退出时调用，避免外部应用残留无边框样式）。杀服务并发执行 */
 export async function releaseAll() {
+  latestOpenId = null
   stopWatcher()
   if (watcherProc) {
     try { watcherProc.kill() } catch {}
@@ -706,6 +703,8 @@ export async function releaseAll() {
     await release(id)
   }
 }
+
+export function disposeBridge() { bridge.dispose() }
 
 /** 停靠全部附着窗口（离开工作台路由时调用；先停看门狗再停靠，否则看门狗会把停靠的窗口拉回容器） */
 export function hideAll() {

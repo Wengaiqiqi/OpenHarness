@@ -22,7 +22,6 @@ app.whenReady().then(async () => {
   const cfgPath = path.join(app.getPath('appData'), 'openharness', 'config.json')
   const store = { providers: [], sessions: [], settings: {}, mcpServers: [] }
   try { Object.assign(store, JSON.parse(fs.readFileSync(cfgPath, 'utf8'))) } catch {}
-  const save = () => fs.writeFileSync(cfgPath, JSON.stringify(store, null, 2))
 
   const win = new BrowserWindow({
     show: false,
@@ -37,7 +36,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('chat:send', (_e, args) => chat.send(win, args))
   ipcMain.handle('chat:abort', (_e, sid) => chat.abort(sid))
   ipcMain.handle('db:get', (_e, key) => store[key] ?? null)
-  ipcMain.handle('db:set', (_e, key, value) => { store[key] = value; save(); return true })
+  // UI smoke runs must never overwrite the real user's conversations/settings.
+  ipcMain.handle('db:set', (_e, key, value) => { store[key] = value; return true })
+  ipcMain.handle('db:patchSettings', (_e, patch) => { store.settings = { ...store.settings, ...patch }; return store.settings })
 
   await win.loadFile(path.join(ROOT, 'out/renderer/index.html'))
   await sleep(1500)

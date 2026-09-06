@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, execFile as rawExecFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { applyAuth } from './agent-config'
+import { applyAuth } from './agent-config.js'
+import { readJson, writeJsonWithBackup } from './config-file.js'
 
 const execFile = promisify(rawExecFile)
 
@@ -18,32 +19,16 @@ function exists(p) {
   }
 }
 
-/** 读取 JSON（不存在/损坏返回 {}） */
-function readJson(p) {
-  try {
-    return JSON.parse(fs.readFileSync(p, 'utf-8'))
-  } catch {
-    return {}
-  }
-}
-
-/** 写入 JSON 前自动备份原文件 */
-function writeJsonWithBackup(p, data) {
-  if (exists(p)) {
-    const backup = p + '.openharness.bak'
-    fs.copyFileSync(p, backup)
-  }
-  fs.mkdirSync(path.dirname(p), { recursive: true })
-  fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf-8')
-}
-
 /**
  * 将 MCP servers 合并注入配置文件
  * key: 'mcpServers' | 'servers'
  */
 function injectMcpIntoFile(configPath, servers, key = 'mcpServers') {
   const config = readJson(configPath)
-  const existing = config[key] || {}
+  const existing = config[key] === undefined ? {} : config[key]
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    throw new Error(`拒绝覆盖非对象配置字段: ${key}`)
+  }
   const injected = []
   for (const s of servers) {
     const entry = buildStdioEntry(s)

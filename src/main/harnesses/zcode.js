@@ -1,5 +1,5 @@
-import { USERPROFILE, exists, firstExists, launchExe } from './base'
-import { mergeJsonAgentProviders } from './agent-config'
+import { USERPROFILE, exists, firstExists, launchExe } from './base.js'
+import { mergeJsonAgentProviders } from './agent-config.js'
 
 /** ZCode（Z.ai AI IDE）：检测本机安装（含自定义安装路径），仅检测/启动 */
 const zcode = {
@@ -28,9 +28,9 @@ const zcode = {
   async injectMcp() {
     return { ok: false, message: 'ZCode 配置格式暂不支持直接注入，请在设置中手动添加' }
   },
-  async configureModel({ models }) {
+  async configureModel({ models, model, token }) {
     const p = this.configPath() || this.configCandidates[0]
-    return mergeJsonAgentProviders(p, { models })
+    return mergeJsonAgentProviders(p, { models, model, token })
   }
 }
 

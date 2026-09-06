@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   /* 存储 */
   dbGet: (key) => invoke('db:get', key),
   dbSet: (key, value) => invoke('db:set', key, value),
+  patchSettings: (patch) => invoke('db:patchSettings', patch),
 
   /* Harness */
   harnessList: (force) => invoke('harness:list', force ? { force: true } : undefined),
@@ -53,7 +54,7 @@ contextBridge.exposeInMainWorld('api', {
   embedStatus: () => invoke('embed:status'),
   ptyInput: (id, data) => ipcRenderer.send('pty:input', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
-  ptyBuffer: (id) => invoke('pty:buffer', id),
+  ptyBuffer: (id, afterOffset = 0) => invoke('pty:buffer', id, afterOffset),
   ptyClose: (id) => invoke('pty:close', id),
   onPtyData: (cb) => {
     const handler = (_e, payload) => cb(payload)
