@@ -609,6 +609,7 @@ async function clipTick() {
     const cy = Number(t) - Number(oy)
     const cw = Number(r) - Number(l)
     const ch = Number(b) - Number(t)
+    if (cw <= 0 || ch <= 0) return // 窗口已退出，等待状态同步清理，不能继续拉回无效句柄。
     const drift =
       Math.abs(cx - allowedRect.x) > 2 ||
       Math.abs(cy - allowedRect.y) > 2 ||
@@ -791,6 +792,27 @@ export function reassertActive() {
 
 export function status() {
   return { attached: [...attached.keys(), ...webServices.keys()], activeId }
+}
+
+/** 查询真实存活状态；桥接失败时保留登记，不能把超时当成应用退出。 */
+export async function refreshStatus() {
+  for (const [id, a] of attached) {
+    const identity = await bridge.send('identity', a.hwnd)
+    if (attached.get(id) !== a) continue
+    if (identity === 'gone:' || (a.identity && /^process:\d+:\d+$/.test(identity) && identity !== a.identity)) {
+      attached.delete(id)
+      clearLatestIf(id)
+      if (activeId === id) { activeId = null; setClipRect(null) }
+    }
+  }
+  for (const id of webServices.keys()) {
+    if (!pty.hasSilent(id)) {
+      webServices.delete(id)
+      clearLatestIf(id)
+      if (activeId === id) activeId = null
+    }
+  }
+  return status()
 }
 
 function parseValue(line = '') {

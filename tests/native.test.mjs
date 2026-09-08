@@ -49,6 +49,7 @@ if ($before.Left -ne $after.Left -or $before.Top -ne $after.Top) { throw 'watche
       fixture.on('error', reject)
     })
     const identity = await bridge.send('identity', child)
+    assert.equal(await bridge.send('close', 0), 'close:True', 'closing an already gone window is successful')
     assert.match(identity, new RegExp(`^process:${fixture.pid}:\\d+$`))
     assert.equal(await bridge.send('findnames', 'powershell'), 'hwnd:0', 'startup helper windows must not be accepted as the application')
     bridge.fire('move', child, 0, 0, 400, 300)

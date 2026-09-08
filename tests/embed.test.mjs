@@ -6,6 +6,25 @@ import vm from 'node:vm'
 const source = fs.readFileSync(new URL('../src/main/embed/index.js', import.meta.url), 'utf8')
   .replace(/^import .*$/gm, '').replace(/export (async )?function /g, '$1function ')
 
+test('status drops externally exited native and web apps, keeps bridge failures and ignores stale replies', async () => {
+  let reply = 'gone:'
+  const context = { execFile() {}, promisify: (fn) => fn, clearInterval() {},
+    bridge: { send: async () => reply }, pty: { hasSilent: () => false } }
+  vm.createContext(context)
+  vm.runInContext(source + `;globalThis.refresh=refreshStatus;globalThis.seed=()=>{attached.set('app',{hwnd:123,identity:'process:99:12345'});activeId='app'};webServices.set('web',{port:1234})`, context)
+  context.seed()
+  assert.equal((await context.refresh()).attached.length, 0)
+  context.seed()
+  reply = 'err:timeout'
+  assert.equal((await context.refresh()).attached.length, 1)
+  let finish
+  context.bridge.send = () => new Promise((resolve) => { finish = resolve })
+  const pending = context.refresh()
+  context.seed()
+  finish('gone:')
+  assert.equal((await pending).attached.length, 1)
+})
+
 test('native attach sets child style before reparenting; resizing refreshes the hit region', async () => {
   const commands = []
   let rejectParent = false

@@ -35,7 +35,7 @@ test('workspace unmount ignores late initial status and late activation completi
       useRoute: () => ({ query: { id: 'app' } }), useRouter: () => ({}),
       ElMessage: { error() {} }, TerminalView: null, iconFallback() {},
       SwitchButton: null, Position: null, Close: null, Monitor: null, Plus: null, Refresh: null,
-      ResizeObserver: class { observe() {} disconnect() {} }, setTimeout, clearTimeout,
+      ResizeObserver: class { observe() {} disconnect() {} }, setTimeout, clearTimeout, setInterval, clearInterval,
       api: {
         harnessList: async () => [{ id: 'app', installed: true }],
         embedStatus: () => phase === 'status' ? pending : Promise.resolve({ attached: [] }),
@@ -55,6 +55,36 @@ test('workspace unmount ignores late initial status and late activation completi
     assert.equal(opens, phase === 'status' ? 0 : 1)
     assert.equal(resized, 0)
   }
+})
+
+test('external exit removes the tab and switches to a survivor; late status cannot erase a new activation', async () => {
+  const context = {
+    ...vueMock({}), useRoute: () => ({ query: {} }), useRouter: () => ({}),
+    ElMessage: { error() {} }, TerminalView: null, iconFallback() {},
+    SwitchButton: null, Position: null, Close: null, Monitor: null, Plus: null, Refresh: null,
+    api: { embedStatus: async () => ({ attached: ['b'] }), embedOpen: async () => ({ ok: true, mode: 'pty' }) }
+  }
+  vm.createContext(context)
+  vm.runInContext(compile('views/WorkspaceView.vue').replace(/^import .*$/gm, '').replace('export default', 'globalThis.component ='), context)
+  const state = context.component.setup({}, { expose() {} })
+  state.tabs.value = [{ id: 'a', mode: 'native', opened: true }, { id: 'b', mode: 'native', opened: true }]
+  state.activeTabId.value = 'a'
+  state.embedOk.value = true
+  await state.syncStatus()
+  assert.deepEqual(Array.from(state.tabs.value, (t) => t.id), ['b'])
+  assert.equal(state.activeTabId.value, 'b')
+  let finish
+  context.api.embedStatus = () => new Promise((resolve) => { finish = resolve })
+  const pending = state.syncStatus()
+  await state.activateTab(state.tabs.value[0])
+  finish({ attached: [] })
+  await pending
+  assert.equal(state.tabs.value.length, 1)
+  context.api.embedStatus = async () => ({ attached: [] })
+  await state.syncStatus()
+  assert.equal(state.tabs.value.length, 0)
+  assert.equal(state.activeTabId.value, null)
+  assert.equal(state.embedOk.value, false)
 })
 
 function makeContext(source, globals) {

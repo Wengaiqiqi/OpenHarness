@@ -181,5 +181,6 @@ export function closeAll() {
   return Promise.all([...pendingKills])
 }
 export function ids() { return [...sessions.keys()] }
+export function hasSilent(id) { return silentHosts.has(id) }
 export function status() { return activeId }
 export function deactivate() { activeId = null }

@@ -22,6 +22,8 @@ let resizeObserver = null
 let throttleTimer = null
 let activationSeq = 0
 let disposed = false
+let statusTimer = null
+let statusBusy = false
 
 const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value) || null)
 // 尚未打开且已安装的 harness，供"+"下拉选择
@@ -65,6 +67,7 @@ function activateTab(t) {
         return
       }
       embedOk.value = true
+      t.opened = true
       t.webUrl = res.webUrl || null
       t.mode = res.mode || (t.webUrl ? 'web' : 'native')
       if (t.mode === 'pty' && !res.reactivated) t.generation = (t.generation || 0) + 1
@@ -97,6 +100,24 @@ async function closeTab(t) {
     const next = tabs.value[idx] || tabs.value[idx - 1]
     if (next) activateTab(next)
   }
+}
+
+/** 外部退出后同步移除标签；过期查询不能覆盖新打开的标签。 */
+async function syncStatus() {
+  if (disposed || loading.value || statusBusy || !tabs.value.length) return
+  const seq = activationSeq
+  statusBusy = true
+  try {
+    const st = await api.embedStatus()
+    if (disposed || loading.value || seq !== activationSeq) return
+    tabs.value = tabs.value.filter((t) => !t.opened || st.attached.includes(t.id))
+    if (activeTabId.value && !tabs.value.some((t) => t.id === activeTabId.value)) {
+      activeTabId.value = null
+      embedOk.value = false
+      if (tabs.value.length) await activateTab(tabs.value[0])
+    }
+  } catch { /* 状态查询失败留待下轮重试，不能误关闭标签。 */ }
+  finally { statusBusy = false }
 }
 
 /** "+" 下拉选择后新开一个嵌入标签 */
@@ -146,6 +167,7 @@ async function releaseAndBack() {
 }
 
 onMounted(async () => {
+  statusTimer = setInterval(syncStatus, 1000)
   resizeObserver = new ResizeObserver(scheduleSync)
   if (hostEl.value) resizeObserver.observe(hostEl.value)
 
@@ -160,7 +182,7 @@ onMounted(async () => {
     // 恢复已附着的标签
     for (const id of st.attached || []) {
       const h = list.find((x) => x.id === id)
-      if (h) tabs.value.push({ id, name: h.name, color: h.color })
+      if (h) tabs.value.push({ id, name: h.name, color: h.color, opened: true })
     }
     // 路由指定打开的
     const qid = route.query.id
@@ -184,6 +206,7 @@ onBeforeUnmount(() => {
   disposed = true
   activationSeq++
   resizeObserver?.disconnect()
+  clearInterval(statusTimer)
   if (throttleTimer) clearTimeout(throttleTimer)
   // 切走页面时隐藏全部附着窗口，保持附着，回来继续用
   api.embedHide()

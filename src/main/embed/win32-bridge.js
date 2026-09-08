@@ -69,7 +69,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
   try {
     $result = & {
     switch ($p[0]) {
-      'close'    { Write-Output ('close:' + [OHWin]::PostMessage([IntPtr][long]$p[1], 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) }
+      'close'    { $h = [IntPtr][long]$p[1]; $closed = -not [OHWin]::IsWindow($h) -or [OHWin]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero); Write-Output ('close:' + ($closed -or -not [OHWin]::IsWindow($h))) }
       'focus' {
         $h = [IntPtr][long]$p[1]
         $ownerPid = 0

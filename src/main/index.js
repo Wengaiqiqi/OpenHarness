@@ -467,8 +467,8 @@ ipcMain.handle('embed:hide', () => {
   return true
 })
 
-ipcMain.handle('embed:status', () => {
-  const status = embed.status()
+ipcMain.handle('embed:status', async () => {
+  const status = await embed.refreshStatus()
   return { ...status, attached: [...status.attached, ...pty.ids()], activeId: pty.status() || status.activeId }
 })
 

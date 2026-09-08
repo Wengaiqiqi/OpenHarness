@@ -29,6 +29,27 @@ app.whenReady().then(async () => {
   const bridgeSource = fs.readFileSync(path.join(__dirname, '../src/main/embed/win32-bridge.js'), 'utf8')
   const { default: probe } = await import('data:text/javascript;base64,' + Buffer.from(bridgeSource).toString('base64'))
   console.log(JSON.stringify({ dir, parent, result, identity: await probe.send('identity', result.hwnd) }))
+  if (process.argv.includes('--external-exit')) {
+    // Reproduce closing the managed process outside OH, then clicking close again.
+    const identity = await probe.send('identity', result.hwnd)
+    assert.match(identity, /^process:\d+:\d+$/)
+    await promisify(execFile)('taskkill', ['/T', '/F', '/PID', identity.split(':')[1]], { windowsHide: true })
+    let removed = false
+    for (let n = 0; n < 30; n++) {
+      removed = await win.webContents.executeJavaScript("!document.querySelector('.ws-tab') && !!document.querySelector('.ws-empty')")
+      if (removed) break
+      await sleep(200)
+    }
+    assert.ok(removed, 'external exit did not remove the workspace tab')
+    const status = await win.webContents.executeJavaScript('window.api.embedStatus()')
+    assert.ok(!status.attached.includes('zcode'))
+    assert.equal(status.activeId, null)
+    await win.webContents.executeJavaScript("window.api.embedClose('zcode')")
+    probe.dispose()
+    console.log('PASS external process exit: repeat close succeeds, tab removed, empty workspace')
+    app.quit()
+    return
+  }
   for (const [width, height] of [[1000, 620], [0, 0], [1200, 660]]) {
     if (width) { win.unmaximize(); win.setSize(width, height) }
     else win.maximize()
