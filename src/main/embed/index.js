@@ -11,7 +11,7 @@ const exec = promisify(execFile)
 
 /** 剥离的窗口样式位：CAPTION|SYSMENU|THICKFRAME|MINIMIZEBOX|MAXIMIZEBOX */
 const STYLE_STRIP = 0x00cf0000
-const SW_SHOW = 5
+const SW_SHOW = 8 // SW_SHOWNA：恢复可见性不抢走外部编辑器的输入焦点
 const SW_HIDE = 0
 const SW_RESTORE = 9
 
@@ -92,6 +92,7 @@ public class OHWatch {
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int ht, bool r);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
@@ -105,6 +106,8 @@ $cb = [OHWatch+WinEventProc]{
   try {
     if ($idObject -ne 0 -or $hwnd -eq [IntPtr]::Zero) { return }
     if ($ev -ne 0x8000 -and $ev -ne 0x8002) { return }
+    # 只停靠独立顶层窗口。ZCode 的输入/渲染子窗口和弹层不能被移到屏幕外。
+    if ([OHWatch]::GetParent($hwnd) -ne [IntPtr]::Zero) { return }
     $wpid = 0
     [OHWatch]::GetWindowThreadProcessId($hwnd, [ref]$wpid) | Out-Null
     if ($wpid -eq 0) { return }
@@ -292,8 +295,14 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
   // 已附着：贴合新容器矩形后直接激活
   if (attached.has(harnessId)) {
     const a = attached.get(harnessId)
-    if (isLatest(harnessId)) activate(harnessId, initialRect)
-    return { ok: true, hwnd: a.hwnd, reactivated: true }
+    const alive = await bridge.send('chk', a.hwnd)
+    if (alive.startsWith(`chk:1:${a.parentHwnd}:`)) {
+      if (isLatest(harnessId)) activate(harnessId, initialRect)
+      return { ok: true, hwnd: a.hwnd, reactivated: true }
+    }
+    if (!alive.startsWith('chk:')) return { ok: false, message: '窗口状态检测失败，请重试' }
+    attached.delete(harnessId)
+    if (activeId === harnessId) { activeId = null; setClipRect(null) }
   }
 
   // 冷启动前先停靠当前激活窗口：原生子窗口永远浮在 HTML 之上，
@@ -326,7 +335,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       // 兜底：服务进程自身（如 node 再启子进程）可能创建的控制台窗口，一并隐藏
       bridge.send('hidebyport', String(port)).catch(() => {})
       if (!ok) {
-        pty.closeSilent(harnessId)
+        await pty.closeSilent(harnessId)
         return { ok: false, message: `服务未能在预期时间内启动（${cli}）` }
       }
       webServices.set(harnessId, { port })
@@ -361,7 +370,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       // 死了就重找重附（预算内循环），直到窗口稳定为止。
       startWatcher(processHints)
       const r = launchExe(exePath)
-      if (!r.ok) return r
+      if (!r.ok) { stopWatcher(); return r }
       pid = r.pid
       const deadline = Date.now() + 45000
       // 注意：用户切出工作台（isLatest=false）不能中止附着——要继续在后台完成，
@@ -456,9 +465,18 @@ async function attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCo
   if (!origStyle) {
     return { ok: false }
   }
+  const identity = await bridge.send('identity', hwnd)
+  if (!/^process:\d+:\d+$/.test(identity)) return { ok: false, message: '无法确定窗口所属进程' }
 
-  await bridge.send('setparent', hwnd, parentHwnd)
-  await bridge.send('style', hwnd, toInt32(origStyle & ~STYLE_STRIP))
+  // SetParent 不会自动修改 WS_CHILD/WS_POPUP；必须先把顶层窗口转换为子窗口。
+  const childStyle = (origStyle & ~STYLE_STRIP & ~0x80000000) | 0x40000000
+  const styled = await bridge.send('style', hwnd, toInt32(childStyle))
+  if (!styled.startsWith('style:')) return { ok: false, message: styled }
+  const parented = await bridge.send('setparent', hwnd, parentHwnd)
+  if (!parented.startsWith('old:')) {
+    await bridge.send('style', hwnd, toInt32(origStyle))
+    return { ok: false, message: parented }
+  }
 
   // 附着瞬间立即定位（仅当用户仍在等待此目标；已离开的窗口保持屏幕外）
   if (initialRect && isLatest(harnessId)) {
@@ -469,7 +487,7 @@ async function attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCo
     )
   }
 
-  attached.set(harnessId, { hwnd, origStyle, parentHwnd, lastRect: initialRect || null, parked: false })
+  attached.set(harnessId, { hwnd, origStyle, identity, parentHwnd, lastRect: initialRect || null, parked: false })
   return { ok: true, hwnd }
 }
 
@@ -493,12 +511,18 @@ export function activate(harnessId, rect) {
   a.parked = false
   bridge.fire('show', a.hwnd, SW_SHOW)
   activeId = harnessId
+  focusActive()
+}
+
+export function focusActive() {
+  const a = attached.get(activeId)
+  if (workspaceVisible && a && !a.parked) bridge.fire('focus', a.hwnd)
 }
 
 /** 重定位当前激活的嵌入窗口（物理像素，相对 BrowserWindow 客户区） */
 export function reposition(rect) {
   const a = attached.get(activeId)
-  if (!a) return
+  if (!a || a.parked || !workspaceVisible) return
   allowedRect = rect
   a.lastRect = rect
   bridge.fire(
@@ -556,13 +580,7 @@ export function setClipRect(rect) {
   if (allowedRect) lastAllowedRect = allowedRect
   if (allowedRect) {
     const a = attached.get(activeId)
-    if (a) {
-      bridge.fire(
-        'move', a.hwnd,
-        Math.round(allowedRect.x), Math.round(allowedRect.y),
-        Math.round(allowedRect.width), Math.round(allowedRect.height)
-      )
-    }
+    if (a && !a.parked) reposition(allowedRect)
   }
   if (clipTimer) clearInterval(clipTimer)
   clipTimer = null
@@ -591,8 +609,6 @@ async function clipTick() {
     const cy = Number(t) - Number(oy)
     const cw = Number(r) - Number(l)
     const ch = Number(b) - Number(t)
-    // 硬裁剪：轮询间隙内子窗口自己挪动时，越界部分也画不出来
-    applyRgn(a, allowedRect, { x: cx, y: cy, width: cw, height: ch })
     const drift =
       Math.abs(cx - allowedRect.x) > 2 ||
       Math.abs(cy - allowedRect.y) > 2 ||
@@ -627,11 +643,18 @@ export async function release(harnessId) {
   }
   const a = attached.get(id)
   if (!a) return
+  const check = await bridge.send('chk', a.hwnd)
+  if (check.startsWith('chk:0:')) {
+    attached.delete(id)
+    if (activeId === id) { activeId = null; setClipRect(null) }
+    return
+  }
+  if (!check.startsWith('chk:1:')) throw new Error('无法检查外部窗口: ' + check)
   bridge.fire('clearrgn', a.hwnd)
-  const restored = await bridge.send('style', a.hwnd, toInt32(a.origStyle))
-  if (!restored.startsWith('style:')) throw new Error('无法恢复外部窗口样式: ' + restored)
   const detached = await bridge.send('setparent', a.hwnd, 0)
   if (!detached.startsWith('old:')) throw new Error('无法释放外部窗口: ' + detached)
+  const restored = await bridge.send('style', a.hwnd, toInt32(a.origStyle))
+  if (!restored.startsWith('style:')) throw new Error('无法恢复外部窗口样式: ' + restored)
   // 转独立窗口：若它正停靠在屏幕外，摆回屏幕上（位置用上次容器矩形近似）
   if (a.lastRect) {
     bridge.fire(
@@ -652,20 +675,17 @@ export async function release(harnessId) {
 export async function closeAndKill(harnessId) {
   const id = harnessId || activeId
   clearLatestIf(id)
-  // Web 型 harness：杀服务进程树（按端口反查 PID），并结束 ConPTY 隐藏宿主。
-  // 杀进程可能耗时数秒（netstat/taskkill），全部放后台执行，绝不拖住 IPC 让 UI 等待
+  // Web 型 harness：按自己创建的宿主 PID 结束进程树并等待完成。
   if (webServices.has(id)) {
-    const { port } = webServices.get(id)
     webServices.delete(id)
     if (activeId === id) activeId = null
-    bridge.send('killport', String(port)).catch(() => {})
-    pty.closeSilent(id)
+    await pty.closeSilent(id)
     return
   }
   // PTY 型（claude code / codex 等内置终端）：结束会话并杀掉进程树，
   // 否则关闭标签后 claude 等进程永久残留
   if (pty.ids().includes(id)) {
-    pty.close(id)
+    await pty.close(id)
     if (activeId === id) activeId = null
     return
   }
@@ -686,15 +706,32 @@ export async function releaseAll() {
   }
   setClipRect(null)
   const kills = []
-  for (const [id, s] of webServices) {
-    kills.push(bridge.send('killport', String(s.port)).catch(() => {}))
-    pty.closeSilent(id)
+  for (const id of webServices.keys()) {
+    kills.push(pty.closeSilent(id))
   }
   webServices.clear()
   await Promise.all(kills)
   for (const id of [...attached.keys()]) {
     await release(id)
   }
+}
+
+// 退出时先恢复窗口以保留保存提示；尚未确认关闭的实例保留到下一次退出重试。
+const pendingShutdown = new Map()
+export async function shutdownAll() {
+  for (const [id, a] of attached) pendingShutdown.set(id, a)
+  await releaseAll()
+  const failures = []
+  for (const [id, a] of pendingShutdown) {
+    const identity = a.identity || await bridge.send('identity', a.hwnd)
+    if (identity === 'gone:') { pendingShutdown.delete(id); continue }
+    if (!/^process:\d+:\d+$/.test(identity)) { failures.push(id + ': 无法确认进程'); continue }
+    a.identity = identity
+    const result = await bridge.send('shutdown', a.hwnd, ...identity.split(':').slice(1))
+    if (result === 'shutdown:True') pendingShutdown.delete(id)
+    else failures.push(id + ': ' + result)
+  }
+  if (failures.length) throw new Error(failures.join('\n'))
 }
 
 export function disposeBridge() { bridge.dispose() }

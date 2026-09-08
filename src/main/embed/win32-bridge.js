@@ -29,8 +29,15 @@ public class OHWin {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetFocus();
   [DllImport("user32.dll")] public static extern IntPtr SetParent(IntPtr h, IntPtr p);
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int ht, bool r);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
   [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
@@ -42,6 +49,7 @@ public class OHWin {
   [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetDesktopWindow();
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
@@ -49,8 +57,8 @@ public class OHWin {
 }
 "@
 Add-Type -TypeDefinition $def
-# 桥进程必须 DPI-aware，否则 MoveWindow 坐标会被系统 DPI 虚拟化错位
-[OHWin]::SetProcessDPIAware() | Out-Null
+# 与 Electron 的物理像素坐标一致，跨不同缩放比例的显示器也不被 DPI 虚拟化。
+[OHWin]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -62,10 +70,58 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     $result = & {
     switch ($p[0]) {
       'close'    { Write-Output ('close:' + [OHWin]::PostMessage([IntPtr][long]$p[1], 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) }
+      'focus' {
+        $h = [IntPtr][long]$p[1]
+        $ownerPid = 0
+        $targetThread = [OHWin]::GetWindowThreadProcessId($h, [ref]$ownerPid)
+        $thread = [OHWin]::GetCurrentThreadId()
+        if (-not $targetThread -or -not [OHWin]::IsWindowVisible($h)) { throw 'window unavailable' }
+        if (-not [OHWin]::AttachThreadInput($thread, $targetThread, $true)) { throw 'AttachThreadInput failed' }
+        try { [OHWin]::SetFocus($h) | Out-Null; Write-Output ('focus:' + [OHWin]::GetFocus()) }
+        finally { [OHWin]::AttachThreadInput($thread, $targetThread, $false) | Out-Null }
+      }
+      'identity' {
+        $targetPid = 0
+        [OHWin]::GetWindowThreadProcessId([IntPtr][long]$p[1], [ref]$targetPid) | Out-Null
+        $target = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if ($targetPid -gt 0 -and $target) { Write-Output ('process:' + $targetPid + ':' + $target.StartTime.ToUniversalTime().Ticks) }
+        else { Write-Output 'gone:' }
+      }
+      'shutdown' {
+        $h = [IntPtr][long]$p[1]
+        $targetPid = [int]$p[2]
+        $target = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if (-not $target -or $target.StartTime.ToUniversalTime().Ticks -ne [long]$p[3]) { Write-Output 'shutdown:True'; break }
+        if ([OHWin]::IsWindow($h)) {
+          $ownerPid = 0
+          [OHWin]::GetWindowThreadProcessId($h, [ref]$ownerPid) | Out-Null
+          if ($ownerPid -ne $targetPid) { throw 'window identity changed' }
+          if (-not [OHWin]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'WM_CLOSE failed' }
+          $deadline = [DateTime]::UtcNow.AddSeconds(3)
+          while ([OHWin]::IsWindow($h) -and [OHWin]::IsWindowVisible($h) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+          if ([OHWin]::IsWindow($h) -and [OHWin]::IsWindowVisible($h)) { throw '请先处理应用的保存提示或关闭窗口，再重试退出' }
+        }
+        # 同一进程的其他独立窗口不属于本次内嵌关闭范围。
+        $script:shutdownPid = $targetPid
+        $script:hasOtherWindow = $false
+        $cb = [OHWin+EnumProc]{ param($w, $l)
+          $wpid = 0
+          [OHWin]::GetWindowThreadProcessId($w, [ref]$wpid) | Out-Null
+          if ($wpid -eq $script:shutdownPid -and [OHWin]::IsWindowVisible($w)) { $script:hasOtherWindow = $true }
+          return $true
+        }
+        [OHWin]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+        $target = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+        if (-not $script:hasOtherWindow -and $target -and $target.StartTime.ToUniversalTime().Ticks -eq [long]$p[3]) {
+          taskkill /T /F /PID $targetPid 2>$null | Out-Null
+          if (-not $target.WaitForExit(1000)) { throw '进程尚未退出' }
+        }
+        Write-Output 'shutdown:True'
+      }
       'getstyle'  { Write-Output ('style:' + [OHWin]::GetWindowLong([IntPtr][long]$p[1], -16)) }
-      'setparent' { $old = [OHWin]::SetParent([IntPtr][long]$p[1], [IntPtr][long]$p[2]); Write-Output ('old:' + $old) }
-      'style'     { $old = [OHWin]::GetWindowLong([IntPtr][long]$p[1], -16); [OHWin]::SetWindowLong([IntPtr][long]$p[1], -16, [int]$p[2]) | Out-Null; Write-Output ('style:' + $old) }
-      'move'      { [OHWin]::MoveWindow([IntPtr][long]$p[1], [int]$p[2], [int]$p[3], [int]$p[4], [int]$p[5], $true) | Out-Null }
+      'setparent' { $h = [IntPtr][long]$p[1]; $parent = [IntPtr][long]$p[2]; $old = [OHWin]::SetParent($h, $parent); if (-not [OHWin]::IsWindow($h) -or ([OHWin]::GetParent($h) -ne $parent -and -not ($parent -eq [IntPtr]::Zero -and [OHWin]::GetParent($h) -eq [OHWin]::GetDesktopWindow()))) { throw 'SetParent failed' }; Write-Output ('old:' + $old) }
+      'style'     { $h = [IntPtr][long]$p[1]; $old = [OHWin]::GetWindowLong($h, -16); [OHWin]::SetWindowLong($h, -16, [int]$p[2]) | Out-Null; if ([OHWin]::GetWindowLong($h, -16) -ne [int]$p[2]) { throw 'SetWindowLong failed' }; [OHWin]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, 0, 0, 0x0037) | Out-Null; Write-Output ('style:' + $old) }
+      'move'      { [OHWin]::SetWindowPos([IntPtr][long]$p[1], [IntPtr]::Zero, [int]$p[2], [int]$p[3], [int]$p[4], [int]$p[5], 0x4010) | Out-Null }
       'show'      { [OHWin]::ShowWindow([IntPtr][long]$p[1], [int]$p[2]) | Out-Null }
       'getrect'   { $r = New-Object OHWin+RECT; [OHWin]::GetWindowRect([IntPtr][long]$p[1], [ref]$r) | Out-Null; Write-Output ('rect:' + $r.Left + ',' + $r.Top + ',' + $r.Right + ',' + $r.Bottom) }
       'clientorigin' { $pt = New-Object OHWin+POINT; [OHWin]::ClientToScreen([IntPtr][long]$p[1], [ref]$pt) | Out-Null; Write-Output ('origin:' + $pt.X + ',' + $pt.Y) }
@@ -210,10 +266,13 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                           $cs -eq 'crashpad_SessionEndWatcher' -or $cs -eq 'ConsoleWindowClass' -or $cs -eq 'CASCADIA_HOSTING_WINDOW_CLASS') { return $true }
                       # 有父窗口的（输入法等）跳过
                       if ([OHWin]::GetParent($h) -ne [IntPtr]::Zero) { return $true }
+                      # 启动时托盘宿主往往先于主窗口出现，透明覆盖层也不能承接输入。
+                      if (-not [OHWin]::IsWindowEnabled($h) -or ([OHWin]::GetWindowLong($h, -20) -band 0x08000020) -ne 0) { return $true }
                       $r = New-Object OHWin+RECT
                       [OHWin]::GetWindowRect($h, [ref]$r) | Out-Null
                       $w = [int]$r.Right - [int]$r.Left
                       $ht = [int]$r.Bottom - [int]$r.Top
+                      if ($w -le 200 -or $ht -le 150 -or $cs -eq 'Electron_NotifyIconHostWindow') { return $true }
                       $score = 0
                       if ([OHWin]::IsWindowVisible($h)) { $score += 100000 }
                       # WS_CAPTION：真实应用主窗口（附着时才被我们剥掉）；弹层/指示器没有

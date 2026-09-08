@@ -11,6 +11,7 @@ const pending = new Map()
 const timers = new Map()
 // 隐藏宿主（web 型 harness）：ConPTY 起服务，不上 UI、不参与激活；关闭标签时 kill
 const silentHosts = new Map()
+const pendingKills = new Set()
 const FLUSH_MS = 16
 const FLUSH_LIMIT = 32 * 1024
 const BUFFER_LIMIT = 512 * 1024
@@ -129,9 +130,21 @@ export function closeSilent(id) {
   const session = silentHosts.get(id)
   if (!session) return
   silentHosts.delete(id)
-  const pid = session.pid
-  session.kill()
-  if (pid) execFile('taskkill', ['/T', '/F', '/PID', String(pid)]).catch(() => {})
+  return terminateSession(session)
+}
+
+function terminateSession(session) {
+  if (!session.pid) { session.kill(); return Promise.resolve() }
+  // 先按仍存活的宿主 PID 结束进程树，不能先 kill 宿主再尝试查找它的子进程。
+  const operation = execFile('taskkill', ['/T', '/F', '/PID', String(session.pid)], { windowsHide: true, timeout: 5000 })
+    .catch((error) => {
+      try { process.kill(session.pid, 0) } catch (probe) { if (probe.code === 'ESRCH') return }
+      throw error
+    })
+    .finally(() => { try { session.kill() } catch {} })
+  pendingKills.add(operation)
+  operation.then(() => pendingKills.delete(operation), () => pendingKills.delete(operation))
+  return operation
 }
 
 export function input(id, data) { sessions.get(id)?.write(data) }
@@ -151,8 +164,6 @@ export function readBuffer(id, afterOffset = 0) {
 export function close(id) {
   const session = sessions.get(id)
   if (!session) return
-  const pid = session.pid
-  session.kill()
   if (sessions.get(id) === session) {
     flush(id)
     sessions.delete(id)
@@ -160,10 +171,15 @@ export function close(id) {
   }
   if (activeId === id) activeId = null
   if (latestId === id) latestId = null
-  if (pid) execFile('taskkill', ['/T', '/F', '/PID', String(pid)]).catch(() => {})
+  return terminateSession(session)
 }
 
-export function closeAll() { for (const id of [...sessions.keys()]) close(id); for (const id of [...silentHosts.keys()]) closeSilent(id); activeId = null }
+export function closeAll() {
+  for (const id of [...sessions.keys()]) close(id)
+  for (const id of [...silentHosts.keys()]) closeSilent(id)
+  activeId = null
+  return Promise.all([...pendingKills])
+}
 export function ids() { return [...sessions.keys()] }
 export function status() { return activeId }
 export function deactivate() { activeId = null }

@@ -10,7 +10,7 @@ const original = fs.readFileSync(new URL('../src/main/pty.js', import.meta.url),
   .replace("import * as pty from 'node-pty'", 'const pty = globalThis.pty')
   .replace(/export function /g, 'function ')
 
-function setup() {
+function setup(rawExecFile = () => {}) {
   const sessions = []
   class FakeSession {
     onData(fn) { this.data = fn }
@@ -25,7 +25,7 @@ function setup() {
     console,
     process: { env: {} },
     os: { homedir: () => 'C:\\Users\\test' },
-    rawExecFile: () => {},
+    rawExecFile,
     promisify: (fn) => fn,
     pty: { spawn: () => { const session = new FakeSession(); sessions.push(session); return session } },
     setTimeout,
@@ -34,13 +34,35 @@ function setup() {
     Number
   }
   vm.createContext(context)
-  vm.runInContext(`${original}; globalThis.mod = { initPty, setLatest, open, readBuffer, close, status }`, context)
+  vm.runInContext(`${original}; globalThis.mod = { initPty, setLatest, open, readBuffer, close, closeAll, status }`, context)
   const events = []
   context.mod.initPty((channel, payload) => events.push({ channel, payload }))
   return { mod: context.mod, sessions, events, pty: context.pty }
 }
 
 const plain = (value) => JSON.parse(JSON.stringify(value))
+
+test('close waits for the process tree before disposing its PTY host; quit waits for pending closes', async () => {
+  let finish
+  const { mod, sessions } = setup((file, args) => {
+    assert.equal(file, 'taskkill')
+    assert.deepEqual(Array.from(args), ['/T', '/F', '/PID', '123'])
+    assert.equal(sessions[0].killed, undefined)
+    return new Promise((resolve) => { finish = resolve })
+  })
+  mod.open('app', 'demo')
+  sessions[0].pid = 123
+  const closing = mod.close('app')
+  let finished = false
+  const all = mod.closeAll().then(() => { finished = true })
+  await Promise.resolve()
+  assert.equal(finished, false)
+  finish()
+  await closing
+  await all
+  assert.equal(sessions[0].killed, true)
+  assert.equal(finished, true)
+})
 
 test('a full 32 KiB block is emitted and addressable without consuming the buffer', () => {
   const { mod, sessions, events } = setup()

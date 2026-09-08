@@ -30,8 +30,8 @@ function setup(saved = {}) {
     async start() { this.running = true }, async stop() { this.running = false }
   }
   const adapter = { async configureModel() { return { ok: true, path: 'mock-config' } } }
-  const embed = { hideAll() {}, async releaseAll() {}, disposeBridge() {} }
-  const pty = { initPty() {}, closeAll() {} }
+  const embed = { hideAll() {}, async releaseAll() {}, async shutdownAll() {}, disposeBridge() {} }
+  const pty = { initPty() {}, setLatest() {}, closeAll() {} }
   const context = { Store, randomBytes, app, embed, pty, buildModelRoutes, console,
     process: { on() {}, env: {} },
     ipcMain: { handle: (name, fn) => handles.set(name, fn), on() {} },
@@ -44,6 +44,18 @@ function setup(saved = {}) {
 }
 const providers = [{ id: 'a', name: 'A', apiKey: 'fake-a' }, { id: 'b', name: 'B', apiKey: 'fake-b' }]
 const history = { agent: { items: [{ providerId: 'a', model: 'one' }, { providerId: 'b', model: 'two' }] } }
+
+test('shrinking and page zoom preserve the workspace origin and fit the remaining client area', () => {
+  const s = setup()
+  let zoom = 1
+  s.context.screen = { getDisplayMatching: () => ({ scaleFactor: 1.5 }) }
+  s.context.testWindow = { getContentBounds: () => ({ width: 960, height: 600 }), webContents: { getZoomFactor: () => zoom } }
+  vm.runInContext('mainWindow=testWindow;globalThis.rect=clampRect', s.context)
+  const css = { x: 80, y: 60, width: 1200, height: 800 }
+  assert.deepEqual(JSON.parse(JSON.stringify(s.context.rect(css))), { x: 120, y: 90, width: 1320, height: 810 })
+  zoom = 1.25
+  assert.deepEqual(JSON.parse(JSON.stringify(s.context.rect(css))), { x: 150, y: 113, width: 1290, height: 787 })
+})
 
 test('startup restores all selected routes with current credentials', async () => {
   const s = setup({ providers, modelConfigHistory: history, proxyTarget: { providerId: 'a', model: 'one' } })
@@ -105,10 +117,10 @@ test('generic storage cannot bypass provider validation or overwrite the proxy t
   assert.equal(s.call('db:get', 'sessions')[0].id, 'test')
 })
 
-test('quit waits for external window release before terminating', async () => {
+test('quit waits for external application shutdown before terminating', async () => {
   const s = setup()
   let finish
-  s.embed.releaseAll = () => new Promise((resolve) => { finish = resolve })
+  s.embed.shutdownAll = () => new Promise((resolve) => { finish = resolve })
   let prevented = false
   s.app.emit('before-quit', { preventDefault() { prevented = true } })
   await new Promise((resolve) => setImmediate(resolve))

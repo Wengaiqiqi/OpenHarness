@@ -37,7 +37,7 @@ function hostRect() {
 }
 
 async function syncSize() {
-  if (!hostEl.value || !embedOk.value) return
+  if (disposed || !hostEl.value || (!embedOk.value && !loading.value)) return
   await api.embedReposition(hostRect())
 }
 
@@ -46,7 +46,7 @@ function scheduleSync() {
   throttleTimer = setTimeout(() => {
     throttleTimer = null
     syncSize()
-  }, 120)
+  }, 16)
 }
 
 /** 激活标签：已附着 → 直接切换显示；未附着 → 附着（冷启动可能较慢） */

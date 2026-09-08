@@ -97,7 +97,7 @@ app.whenReady().then(() => {
   mainWindow.on('maximize', () => { resyncEmbed(); reassertEmbed() })
   mainWindow.on('unmaximize', () => { resyncEmbed(); reassertEmbed() })
   mainWindow.on('restore', () => { resyncEmbed(); reassertEmbed() })
-  mainWindow.on('focus', reassertEmbed)
+  mainWindow.on('focus', () => { reassertEmbed(); embed.focusActive() })
   mainWindow.on('show', () => { resyncEmbed(); reassertEmbed() })
   mainWindow.on('enter-full-screen', resyncEmbed)
   mainWindow.on('leave-full-screen', resyncEmbed)
@@ -126,17 +126,18 @@ app.on('before-quit', (event) => {
   if (shuttingDown) return
   shuttingDown = true
   embed.hideAll()
+  pty.setLatest(null)
   ;(async () => {
     await Promise.allSettled([...inflightOpens.values()])
-    await embed.releaseAll()
-    pty.closeAll()
+    await pty.closeAll()
+    await embed.shutdownAll()
     await modelProxy.stop()
     embed.disposeBridge()
     shutdownComplete = true
     app.quit()
   })().catch((err) => {
     shuttingDown = false
-    dialog.showErrorBox('暂时无法安全退出', `外部应用窗口未能完成释放，请重试。\n${String(err)}`)
+    dialog.showErrorBox('暂时无法安全退出', `内嵌应用尚未关闭，请处理保存提示后重试。\n${String(err)}`)
   })
 })
 
@@ -349,14 +350,14 @@ function clampRect(cssRect) {
   const cb = mainWindow ? mainWindow.getContentBounds() : { width: 1600, height: 1000 }
   const display = screen.getDisplayMatching(cb)
   const scale = display.scaleFactor || 1
+  const cssScale = scale * (mainWindow?.webContents.getZoomFactor() || 1)
   const maxW = Math.max(100, Math.round(cb.width * scale))
   const maxH = Math.max(100, Math.round(cb.height * scale))
-  let width = Math.round((cssRect?.width || 100) * scale)
-  let height = Math.round((cssRect?.height || 100) * scale)
-  width = Math.min(Math.max(100, width), maxW)
-  height = Math.min(Math.max(100, height), maxH)
-  const x = Math.min(Math.max(0, Math.round((cssRect?.x || 0) * scale)), maxW - width)
-  const y = Math.min(Math.max(0, Math.round((cssRect?.y || 0) * scale)), maxH - height)
+  const x = Math.min(Math.max(0, Math.round((cssRect?.x || 0) * cssScale)), maxW - 1)
+  const y = Math.min(Math.max(0, Math.round((cssRect?.y || 0) * cssScale)), maxH - 1)
+  // 缩窗时保持容器原点，缩小剩余空间；不能为了塞入旧尺寸而挪到侧栏/标题栏上。
+  const width = Math.min(Math.max(1, Math.round((cssRect?.width || 100) * cssScale)), maxW - x)
+  const height = Math.min(Math.max(1, Math.round((cssRect?.height || 100) * cssScale)), maxH - y)
   return { x, y, width, height }
 }
 
@@ -425,12 +426,11 @@ async function openHarness(id, cssRect) {
 ipcMain.on('pty:input', (_e, id, data) => pty.input(id, data))
 ipcMain.on('pty:resize', (_e, id, cols, rows) => pty.resize(id, cols, rows))
 ipcMain.handle('pty:buffer', (_e, id, afterOffset) => pty.readBuffer(id, afterOffset))
-ipcMain.handle('pty:close', (_e, id) => { pty.close(id); return true })
+ipcMain.handle('pty:close', async (_e, id) => { await pty.close(id); return true })
 
 ipcMain.handle('embed:reposition', (_e, rect) => {
   if (!mainWindow) return false
   lastCssRect = rect
-  embed.reposition(clampRect(rect))
   applyClip()
   return true
 })
@@ -455,7 +455,7 @@ ipcMain.handle('embed:releaseAll', async () => {
     embed.hideAll()
     pty.setLatest(null)
     await Promise.allSettled([...inflightOpens.values()])
-    pty.closeAll()
+    await pty.closeAll()
     await embed.releaseAll()
     return true
   } finally { releasingAll = false }
