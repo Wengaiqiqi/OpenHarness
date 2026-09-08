@@ -6,6 +6,7 @@ import path from 'node:path'
 import * as yaml from 'js-yaml'
 import { parse as parseToml } from 'smol-toml'
 import {
+  applyAuth,
   mergeClaudeCodeSettings,
   mergeJsonAgentProviders,
   mergeTomlProvider,
@@ -125,4 +126,29 @@ test('a missing token is rejected before writing', (t) => {
   const p = file('missing-token.json')
   assert.throws(() => mergeJsonAgentProviders(p, { models: ['m'] }), /token 不能为空/)
   assert.equal(fs.existsSync(p), false)
+})
+
+test('YAML scalar roots are preserved and empty mappings remain writable', (t) => {
+  const file = sandbox(t)
+  const p = file('settings.yaml')
+  for (const source of ['false', '0', '""', 'null']) {
+    fs.writeFileSync(p, source)
+    assert.throws(() => mergeYamlAgentProviders(p, { models: ['m'], token: 't' }), /非对象/)
+    assert.equal(fs.readFileSync(p, 'utf8'), source)
+    assert.equal(fs.existsSync(p + '.openharness.bak'), false)
+  }
+  fs.writeFileSync(p, '{}')
+  mergeYamlAgentProviders(p, { models: ['m'], token: 't' })
+  assert.equal(yaml.load(fs.readFileSync(p, 'utf8')).providers.openharness.settings.apiKey, 't')
+})
+
+test('query authentication replaces old credentials and stays before the fragment', () => {
+  const result = applyAuth({
+    url: 'https://example.test/mcp?key=old&keep=1#section',
+    auth: { mode: 'query', key: 'new & key' }
+  })
+  const url = new URL(result.url)
+  assert.deepEqual(url.searchParams.getAll('key'), ['new & key'])
+  assert.equal(url.searchParams.get('keep'), '1')
+  assert.equal(url.hash, '#section')
 })

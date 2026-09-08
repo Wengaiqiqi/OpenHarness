@@ -1,5 +1,4 @@
 import os from 'node:os'
-import path from 'node:path'
 import { execFile as rawExecFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as pty from 'node-pty'
@@ -78,12 +77,15 @@ function clearSessionState(id) {
 }
 
 export function open(id, exe, cols = 80, rows = 24) {
-  if (isLatest(id)) activeId = id
-  if (sessions.has(id)) return { ok: true, mode: 'pty', reactivated: true }
+  if (sessions.has(id)) {
+    if (isLatest(id)) activeId = id
+    return { ok: true, mode: 'pty', reactivated: true }
+  }
   const cmd = commandFor(exe)
   const env = { ...process.env, FORCE_COLOR: '1', COLORTERM: 'truecolor', TERM: 'xterm-256color' }
   const session = pty.spawn(cmd.file, cmd.args, { name: 'xterm-256color', cols, rows, cwd: os.homedir(), env })
   sessions.set(id, session)
+  if (isLatest(id)) activeId = id
   buffers.set(id, { data: '', startOffset: 0, endOffset: 0 })
   pending.set(id, { data: '', startOffset: 0, endOffset: 0 })
   session.onData((data) => {
@@ -94,6 +96,7 @@ export function open(id, exe, cols = 80, rows = 24) {
     flush(id)
     sessions.delete(id)
     clearSessionState(id)
+    if (activeId === id) activeId = null
     send('pty:exit', { id, exitCode })
   })
   return { ok: true, mode: 'pty' }
@@ -130,7 +133,6 @@ export function closeSilent(id) {
   session.kill()
   if (pid) execFile('taskkill', ['/T', '/F', '/PID', String(pid)]).catch(() => {})
 }
-export function silentIds() { return [...silentHosts.keys()] }
 
 export function input(id, data) { sessions.get(id)?.write(data) }
 export function resize(id, cols, rows) { sessions.get(id)?.resize(Math.max(2, cols), Math.max(2, rows)) }

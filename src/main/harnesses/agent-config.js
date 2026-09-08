@@ -1,7 +1,6 @@
-import fs from 'node:fs'
 import * as yaml from 'js-yaml'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
-import { atomicWriteWithBackup, readConfig } from './config-file.js'
+import { atomicWriteWithBackup, readConfig, readJson } from './config-file.js'
 
 /**
  * Agent 模型配置写入器（参考 opencodex 的集成格式）。
@@ -14,10 +13,6 @@ import { atomicWriteWithBackup, readConfig } from './config-file.js'
 
 const PROXY_BASE = 'http://127.0.0.1:18200/v1'
 const V2_PACKAGE = '@opencode-ai/ai/providers/openai-compatible'
-
-function readDoc(p) {
-  return readConfig(p, JSON.parse, 'JSON')
-}
 
 function requireToken(token) {
   if (typeof token !== 'string' || !token) throw new Error('OpenHarness 配置 token 不能为空')
@@ -47,8 +42,9 @@ export function applyAuth(server) {
   const auth = server.auth
   const key = (auth?.key || '').trim()
   if (key && auth.mode === 'query') {
-    const name = encodeURIComponent(auth.name || 'key')
-    url += (url.includes('?') ? '&' : '?') + `${name}=${encodeURIComponent(key)}`
+    const parsed = new URL(url)
+    parsed.searchParams.set(auth.name || 'key', key)
+    url = parsed.href
   } else if (key && auth.mode === 'bearer') {
     headers.Authorization = `Bearer ${key}`
   } else if (key && auth.mode === 'header') {
@@ -64,7 +60,7 @@ function modelMap(models) {
 
 /** JSON 文档：合并 opencode 形状的 V1+V2 provider 块 */
 export function mergeJsonAgentProviders(configPath, { models, model, token }) {
-  const doc = readDoc(configPath)
+  const doc = readJson(configPath)
   const mm = modelMap(models)
   const options = { baseURL: PROXY_BASE, apiKey: requireToken(token) }
   doc.provider = {
@@ -80,7 +76,7 @@ export function mergeJsonAgentProviders(configPath, { models, model, token }) {
 }
 
 export function mergeClaudeCodeSettings(configPath, { models, model, token }) {
-  const doc = readDoc(configPath)
+  const doc = readJson(configPath)
   doc.env = {
     ...objectField(doc, 'env'),
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:18200',
@@ -93,7 +89,7 @@ export function mergeClaudeCodeSettings(configPath, { models, model, token }) {
 
 /** YAML 文档：在 rootPath（如 ['providers'] 或 ['llm-pi-ai','providers']）下合并 V2 块 */
 export function mergeYamlAgentProviders(configPath, { models, model, token }, rootPath = ['providers']) {
-  const doc = readConfig(configPath, (source) => yaml.load(source) || {}, 'YAML')
+  const doc = readConfig(configPath, yaml.load, 'YAML')
   let node = doc
   for (const key of rootPath.slice(0, -1)) {
     if (node[key] === undefined) node[key] = {}
@@ -119,7 +115,7 @@ export function mergeYamlAgentProviders(configPath, { models, model, token }, ro
 
 /** opencode 形状的 mcp 块：remote（SSE/HTTP）+ local（stdio），合并注入 opencode.json */
 export function mergeOpencodeMcp(configPath, servers) {
-  const doc = readDoc(configPath)
+  const doc = readJson(configPath)
   const existing = objectField(doc, 'mcp')
   const injected = []
   for (const s of servers || []) {
@@ -149,14 +145,7 @@ export function mergeOpencodeMcp(configPath, servers) {
 
 /** TOML 文档：codex 风格 model_provider 表（幂等替换我们管理的段） */
 export function mergeTomlProvider(configPath, { models, model, token }) {
-  let toml = ''
-  try { toml = fs.readFileSync(configPath, 'utf-8') } catch (err) {
-    if (err?.code !== 'ENOENT') throw err
-  }
-  let doc
-  try { doc = parseToml(toml, { integersAsBigInt: true }) } catch (err) {
-    throw new Error(`拒绝覆盖无法解析的 TOML 配置: ${configPath}`, { cause: err })
-  }
+  const doc = readConfig(configPath, (source) => parseToml(source, { integersAsBigInt: true }), 'TOML')
   const auth = `Bearer ${requireToken(token)}`
   delete doc.model
   doc.model_provider = 'openharness'

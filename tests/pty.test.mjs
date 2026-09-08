@@ -5,7 +5,6 @@ import vm from 'node:vm'
 
 const original = fs.readFileSync(new URL('../src/main/pty.js', import.meta.url), 'utf8')
   .replace("import os from 'node:os'", 'const os = globalThis.os')
-  .replace("import path from 'node:path'", 'const path = globalThis.path')
   .replace("import { execFile as rawExecFile } from 'node:child_process'", 'const rawExecFile = globalThis.rawExecFile')
   .replace("import { promisify } from 'node:util'", 'const promisify = globalThis.promisify')
   .replace("import * as pty from 'node-pty'", 'const pty = globalThis.pty')
@@ -26,7 +25,6 @@ function setup() {
     console,
     process: { env: {} },
     os: { homedir: () => 'C:\\Users\\test' },
-    path: {},
     rawExecFile: () => {},
     promisify: (fn) => fn,
     pty: { spawn: () => { const session = new FakeSession(); sessions.push(session); return session } },
@@ -36,10 +34,10 @@ function setup() {
     Number
   }
   vm.createContext(context)
-  vm.runInContext(`${original}; globalThis.mod = { initPty, setLatest, open, readBuffer, close }`, context)
+  vm.runInContext(`${original}; globalThis.mod = { initPty, setLatest, open, readBuffer, close, status }`, context)
   const events = []
   context.mod.initPty((channel, payload) => events.push({ channel, payload }))
-  return { mod: context.mod, sessions, events }
+  return { mod: context.mod, sessions, events, pty: context.pty }
 }
 
 const plain = (value) => JSON.parse(JSON.stringify(value))
@@ -78,4 +76,27 @@ test('late output and exit from an old same-id session cannot clear its replacem
     data: '', startOffset: 0, endOffset: 0, truncated: false
   })
   mod.close('s1')
+})
+
+test('natural exit clears active status without clearing a newer active session', () => {
+  const { mod, sessions } = setup()
+  mod.setLatest('first')
+  mod.open('first', 'demo')
+  mod.setLatest('second')
+  mod.open('second', 'demo')
+  sessions[0].emitExit()
+  assert.equal(mod.status(), 'second')
+  sessions[1].emitExit()
+  assert.equal(mod.status(), null)
+})
+
+test('failed spawn does not activate a nonexistent terminal', () => {
+  const { mod, pty } = setup()
+  mod.setLatest('first')
+  mod.open('first', 'demo')
+  mod.setLatest('broken')
+  pty.spawn = () => { throw new Error('spawn failed') }
+  assert.throws(() => mod.open('broken', 'demo'), /spawn failed/)
+  assert.equal(mod.status(), 'first')
+  mod.close('first')
 })
