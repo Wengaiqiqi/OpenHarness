@@ -114,23 +114,22 @@ export function createChatService() {
             pushChunk(win, sessionId, { type: 'done' })
             return { ok: true }
           }
-          try {
-            const json = JSON.parse(payload)
-            if (json.error) {
-              const msg = json.error.message || JSON.stringify(json.error)
-              pushChunk(win, sessionId, { type: 'error', message: msg })
-              return { ok: false, message: msg }
-            }
-            const delta = extractDelta(type, json)
-            if (delta) pushChunk(win, sessionId, delta)
-          } catch {
-            /* 忽略无法解析的行 */
+          let json
+          try { json = JSON.parse(payload) } catch { throw new Error('上游返回无效流式数据') }
+          if (json.error || ['response.failed', 'response.incomplete'].includes(json.type)) {
+            throw new Error(json.error?.message || json.response?.error?.message ||
+              json.response?.incomplete_details?.reason || '上游未完成响应')
           }
+          if (['message_stop', 'response.completed'].includes(json.type)) {
+            pushChunk(win, sessionId, { type: 'done' })
+            return { ok: true }
+          }
+          const delta = extractDelta(type, json)
+          if (delta) pushChunk(win, sessionId, delta)
         }
       }
 
-      pushChunk(win, sessionId, { type: 'done' })
-      return { ok: true }
+      throw new Error('上游连接提前结束，未收到完成标记')
     } catch (err) {
       if (timedOut) {
         const msg = '上游 90 秒未返回任何数据，已中止（请检查网络或系统代理）'

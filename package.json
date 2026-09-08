@@ -7,10 +7,11 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
+    "test:electron": "electron tests/electron-smoke.cjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "start": "electron-vite dev && electron .",
+    "start": "electron-vite dev",
     "pack": "electron-vite build && electron-builder --dir",
     "dist": "electron-vite build && electron-builder"
   },
@@ -25,17 +26,18 @@
   "devDependencies": {
     "@element-plus/icons-vue": "^2.3.1",
     "@vitejs/plugin-vue": "^6.0.8",
-    "electron": "^31.3.0",
-    "electron-builder": "^24.13.3",
-    "electron-vite": "^2.3.0",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
     "element-plus": "^2.7.6",
     "pinia": "^2.1.7",
     "sass": "^1.77.6",
-    "vite": "^5.3.4",
+    "vite": "^7.3.6",
     "vue": "^3.4.31",
     "vue-router": "^4.4.0"
   },
   "build": {
+    "npmRebuild": false,
     "asarUnpack": ["**/node_modules/node-pty/**"],
     "win": {
       "icon": "build/icon-256.png"

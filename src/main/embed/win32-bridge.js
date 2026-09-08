@@ -37,7 +37,8 @@ public class OHWin {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
-  [DllImport("user32.dll")] public static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
+  [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
+  [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr h);
   [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
@@ -105,7 +106,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                       if ($w -and $w.MainWindowHandle -ne 0) { [OHWin]::ShowWindow([IntPtr]$w.MainWindowHandle, 0) | Out-Null; Write-Output ('hid:' + $w.MainWindowHandle) }
                     }
                   }
-      'setrgn'    { $rgn = [OHWin]::CreateRectRgn([int]$p[2], [int]$p[3], ([int]$p[2] + [int]$p[4]), ([int]$p[3] + [int]$p[5])); [OHWin]::SetWindowRgn([IntPtr][long]$p[1], $rgn, $true) | Out-Null }
+      'setrgn'    { $rgn = [OHWin]::CreateRectRgn([int]$p[2], [int]$p[3], ([int]$p[2] + [int]$p[4]), ([int]$p[3] + [int]$p[5])); if ([OHWin]::SetWindowRgn([IntPtr][long]$p[1], $rgn, $true) -eq 0) { [OHWin]::DeleteObject($rgn) | Out-Null } }
       'clearrgn'  { [OHWin]::SetWindowRgn([IntPtr][long]$p[1], [IntPtr]::Zero, $true) | Out-Null }
       'pidof'     { $procId = 0; [OHWin]::GetWindowThreadProcessId([IntPtr][long]$p[1], [ref]$procId) | Out-Null; Write-Output ('pid:' + $procId) }
       'chk'       {

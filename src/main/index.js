@@ -11,8 +11,6 @@ import { resolveCliCommand, scanSystemApps } from './harnesses/base'
 import * as pty from './pty'
 import { buildModelRoutes } from './model-routing'
 
-Store.initRenderer()
-
 // 主进程兜底：任何未捕获异常只记日志，绝不弹错误对话框阻塞应用
 process.on('uncaughtException', (e) => {
   try { console.error('[main] uncaught:', e) } catch {}
@@ -33,6 +31,7 @@ const store = new Store({
 let mainWindow = null
 let shutdownComplete = false
 let shuttingDown = false
+let releasingAll = false
 const inflightOpens = new Map()
 pty.initPty((channel, payload) => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
@@ -170,8 +169,12 @@ ipcMain.handle('app:syncThemeOverlay', (_e, dark) => {
 })
 
 /* ---------------- IPC: 数据存取 ---------------- */
-ipcMain.handle('db:get', (_e, key) => store.get(key))
+ipcMain.handle('db:get', (_e, key) => {
+  if (!['sessions', 'settings'].includes(key)) throw new Error('不支持读取此数据项')
+  return store.get(key)
+})
 ipcMain.handle('db:set', (_e, key, value) => {
+  if (key !== 'sessions' || !Array.isArray(value)) throw new Error('只能通过此接口保存会话列表')
   store.set(key, value)
   return true
 })
@@ -367,6 +370,9 @@ function applyClip() {
 
 ipcMain.handle('embed:open', async (_e, id, cssRect) => {
   if (shuttingDown) return { ok: false, message: '应用正在退出' }
+  if (releasingAll) return { ok: false, message: '正在释放应用，请稍后重试' }
+  embed.setLatest(id)
+  pty.setLatest(id)
   const previous = inflightOpens.get(id)
   if (previous) return previous
   const operation = openHarness(id, cssRect)
@@ -388,22 +394,18 @@ async function openHarness(id, cssRect) {
   const detectInfo = await adapter.detect(sys)
   if (!detectInfo.installed) return { ok: false, message: `${adapter.name} 未安装` }
 
-  if (cssRect) lastCssRect = cssRect
+  if (cssRect && embed.isLatest(id)) lastCssRect = cssRect
   const initialRect = cssRect ? clampRect(cssRect) : undefined
 
   try {
     if (adapter.usePty) {
-      pty.setLatest(id)
-      // 同步顶掉 embed 的最新目标，避免更早的原生慢冷启动误判为新目标而抢前台
-      embed.setLatest(id)
       // PTY 渲染在 HTML 里，而原生附着窗口永远浮在 HTML 之上——
       // 必须先把已附着的老窗口停靠屏幕外，否则它盖住终端，表现为"卡死在新界面"
-      embed.parkForNonNative(id)
+      if (embed.isLatest(id)) embed.parkForNonNative(id)
       // 中央 cli 自愈：PATH 外安装的 harness（grok/codex/kimi…）按 exeCandidates 回退
       return pty.open(id, await resolveCliCommand(adapter))
     }
-    pty.deactivate()
-    embed.setLatest(id)
+    if (embed.isLatest(id)) pty.deactivate()
     const res = await embed.embedApp({
       harnessId: id,
       exePath: detectInfo.exePath,
@@ -447,13 +449,21 @@ ipcMain.handle('embed:release', (_e, id) => {
 })
 
 ipcMain.handle('embed:releaseAll', async () => {
-  pty.closeAll()
-  await embed.releaseAll()
-  return true
+  if (releasingAll) throw new Error('正在释放应用，请稍后重试')
+  releasingAll = true
+  try {
+    embed.hideAll()
+    pty.setLatest(null)
+    await Promise.allSettled([...inflightOpens.values()])
+    pty.closeAll()
+    await embed.releaseAll()
+    return true
+  } finally { releasingAll = false }
 })
 
 ipcMain.handle('embed:hide', () => {
   embed.hideAll()
+  pty.setLatest(null)
   return true
 })
 

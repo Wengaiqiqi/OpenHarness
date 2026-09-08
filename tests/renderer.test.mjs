@@ -23,6 +23,40 @@ function vueMock(hooks) {
   }
 }
 
+test('workspace unmount ignores late initial status and late activation completion', async () => {
+  for (const phase of ['status', 'open']) {
+    const hooks = {}
+    let finish
+    let opens = 0
+    let resized = 0
+    const pending = new Promise((resolve) => { finish = resolve })
+    const context = {
+      ...vueMock(hooks),
+      useRoute: () => ({ query: { id: 'app' } }), useRouter: () => ({}),
+      ElMessage: { error() {} }, TerminalView: null, iconFallback() {},
+      SwitchButton: null, Position: null, Close: null, Monitor: null, Plus: null, Refresh: null,
+      ResizeObserver: class { observe() {} disconnect() {} }, setTimeout, clearTimeout,
+      api: {
+        harnessList: async () => [{ id: 'app', installed: true }],
+        embedStatus: () => phase === 'status' ? pending : Promise.resolve({ attached: [] }),
+        embedOpen: () => { opens++; return pending },
+        embedReposition: () => { resized++ }, embedHide() {}
+      }
+    }
+    vm.createContext(context)
+    vm.runInContext(compile('views/WorkspaceView.vue').replace(/^import .*$/gm, '').replace('export default', 'globalThis.component ='), context)
+    const state = context.component.setup({}, { expose() {} })
+    state.hostEl.value = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) }
+    const mounting = hooks.mounted()
+    await new Promise(setImmediate)
+    hooks.beforeUnmount()
+    finish(phase === 'status' ? { attached: [] } : { ok: true })
+    await mounting
+    assert.equal(opens, phase === 'status' ? 0 : 1)
+    assert.equal(resized, 0)
+  }
+})
+
 function makeContext(source, globals) {
   const transformed = source
     .replace(/^import \{ api \} from '@\/api'\r?\n/m, 'const { api } = globalThis.mocks\n')

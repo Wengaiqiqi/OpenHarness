@@ -1,5 +1,5 @@
 import { LOCALAPPDATA, USERPROFILE, exists, firstExists, launchExe } from './base.js'
-import { mergeYamlAgentProviders } from './agent-config.js'
+import { mergeJsonAgentProviders } from './agent-config.js'
 
 /** Hermes（Nous Research hermes-agent）：个人 AI Agent，检测 CLI 与配置目录 */
 const hermes = {
@@ -33,7 +33,7 @@ const hermes = {
   },
   async configureModel({ models, model, token }) {
     const p = this.configPath() || this.configCandidates[0]
-    return mergeYamlAgentProviders(p, { models, model, token }, ['providers'])
+    return mergeJsonAgentProviders(p, { models, model, token })
   }
 }
 

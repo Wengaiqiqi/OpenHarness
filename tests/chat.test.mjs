@@ -10,6 +10,36 @@ function windowMock() {
   return { chunks, isDestroyed: () => false, webContents: { send: (_channel, chunk) => chunks.push(chunk) } }
 }
 
+test('truncated streams and Responses failures are errors, not successful completions', async () => {
+  for (const body of ['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+    'data: {"type":"response.failed","response":{"error":{"message":"failed upstream"}}}\n\n',
+    'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}\n\n']) {
+    globalThis.fetch = async () => new Response(body)
+    const win = windowMock()
+    assert.equal((await createChatService().send(win, payload)).ok, false)
+    assert.equal(win.chunks.at(-1).type, 'error')
+  }
+})
+
+test('protocol terminal events complete even when the connection remains open', async () => {
+  for (const type of ['message_stop', 'response.completed']) {
+    let cancelled = false
+    globalThis.fetch = async (_url, { signal }) => new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type })}\n\n`))
+        signal.addEventListener('abort', () => c.error(new DOMException('aborted', 'AbortError')))
+      },
+      cancel() { cancelled = true }
+    }))
+    const chat = createChatService()
+    const timer = setTimeout(() => chat.abort(payload.sessionId), 100)
+    try {
+      assert.deepEqual(await chat.send(windowMock(), payload), { ok: true })
+      assert.equal(cancelled, true)
+    } finally { clearTimeout(timer) }
+  }
+})
+
 test('fetch failures keep their original error and release the session lock', async () => {
   const win = windowMock()
   const chat = createChatService()

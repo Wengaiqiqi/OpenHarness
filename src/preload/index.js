@@ -1,9 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-// Vue reactive Proxy 对象无法通过 IPC 结构化克隆（DataCloneError），
-// 统一在出口处做 JSON 往返，保证跨 IPC 的都是纯数据
-const plain = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v)))
-const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args.map(plain))
+// renderer/api.js 在跨 contextBridge 前已剥离 Vue Proxy，这里直接调用 IPC。
+const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args)
 
 contextBridge.exposeInMainWorld('api', {
   /* 应用 */

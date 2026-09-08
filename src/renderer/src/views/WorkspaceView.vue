@@ -21,6 +21,7 @@ const addVisible = ref(false)
 let resizeObserver = null
 let throttleTimer = null
 let activationSeq = 0
+let disposed = false
 
 const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value) || null)
 // 尚未打开且已安装的 harness，供"+"下拉选择
@@ -50,6 +51,7 @@ function scheduleSync() {
 
 /** 激活标签：已附着 → 直接切换显示；未附着 → 附着（冷启动可能较慢） */
 function activateTab(t) {
+  if (disposed) return
   const seq = ++activationSeq
   activeTabId.value = t.id
   loading.value = true
@@ -153,6 +155,7 @@ onMounted(async () => {
     const list = (await api.harnessList()) || []
     harnessList.value = list
     const st = await api.embedStatus()
+    if (disposed) return
 
     // 恢复已附着的标签
     for (const id of st.attached || []) {
@@ -178,6 +181,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  activationSeq++
   resizeObserver?.disconnect()
   if (throttleTimer) clearTimeout(throttleTimer)
   // 切走页面时隐藏全部附着窗口，保持附着，回来继续用
@@ -208,7 +213,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <div class="ws-actions">
-        <el-button size="small" :icon="Position" :disabled="!activeTab || activeTab.mode === 'pty'" @click="toStandalone">转为独立窗口</el-button>
+        <el-button size="small" :icon="Position" :disabled="loading || activeTab?.mode !== 'native'" @click="toStandalone">转为独立窗口</el-button>
         <el-button size="small" type="danger" plain :icon="SwitchButton" :disabled="!tabs.length" @click="releaseAndBack">释放并返回</el-button>
       </div>
     </header>

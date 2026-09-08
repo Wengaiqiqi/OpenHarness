@@ -12,14 +12,46 @@ import {
   mergeTomlProvider,
   mergeYamlAgentProviders
 } from '../src/main/harnesses/agent-config.js'
-import { injectMcpIntoFile } from '../src/main/harnesses/base.js'
+import { injectMcpIntoFile, resolveCliCommand, commandExists } from '../src/main/harnesses/base.js'
 import claudeCode from '../src/main/harnesses/claude-code.js'
+import hermes from '../src/main/harnesses/hermes.js'
+import pi from '../src/main/harnesses/pi.js'
+import kimi from '../src/main/harnesses/kimi-code.js'
+import minimax from '../src/main/harnesses/minimax-code.js'
+import prime from '../src/main/harnesses/prime-agent.js'
 
 function sandbox(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openharness-config-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   return (name) => path.join(dir, name)
 }
+
+test('Hermes model configuration stays JSON and preserves unrelated fields', async (t) => {
+  const p = sandbox(t)('hermes.json')
+  fs.writeFileSync(p, '{"keep":true,"providers":{"other":{"name":"existing"}}}')
+  await hermes.configureModel.call({ configPath: () => p }, { models: ['m'], token: 'test' })
+  const saved = JSON.parse(fs.readFileSync(p, 'utf8'))
+  assert.equal(saved.keep, true)
+  assert.equal(saved.providers.other.name, 'existing')
+  assert.equal(saved.providers.openharness.settings.apiKey, 'test')
+})
+
+test('CLI fallback quotes spaced paths and fresh installs do not require config files', async (t) => {
+  const file = sandbox(t)
+  const executable = file('fake command.cmd')
+  fs.writeFileSync(executable, '@echo off\r\n')
+  const adapter = { cli: 'openharness-nonexistent-test-command', exeCandidates: [executable], _cliResolved: 'obsolete' }
+  assert.equal(await resolveCliCommand(adapter), `"${executable}"`)
+  adapter.cli = executable
+  assert.equal(await resolveCliCommand(adapter), `"${executable}"`)
+  assert.equal(await commandExists(executable), true)
+  for (const cli of [pi, kimi, minimax, prime]) {
+    const result = await cli.detect.call({ ...adapter, configCandidates: [file('missing.json')] })
+    assert.equal(result.installed, true)
+    assert.equal(result.exePath, executable)
+    assert.equal(result.configPath, null)
+  }
+})
 
 test('invalid JSON, YAML, and TOML are never overwritten', (t) => {
   const file = sandbox(t)

@@ -236,22 +236,23 @@ export async function scanSystemApps(force = false) {
 
 /**
  * 中央 cli 自愈：cli 不在 PATH 时按 exeCandidates 逐个回退（修"已安装却检测不到/启动失败"）。
- * 结果记忆在适配器对象上，进程内只解析一次。同步覆盖所有 PTY 型 harness。
+ * 每次打开重新解析，避免安装位置或命令变更后继续使用旧路径。
  */
 export async function resolveCliCommand(adapter) {
-  if (adapter._cliResolved) return adapter._cliResolved
   let cli = adapter.cli
-  if (cli && !(await commandExists(String(cli).trim().split(/\s+/)[0])) && adapter.exeCandidates) {
+  if (exists(cli)) return `"${cli}"`
+  if (cli && !(await commandExists(cli)) && adapter.exeCandidates) {
     const exe = firstExists(adapter.exeCandidates)
-    if (exe) cli = exe
+    if (exe) cli = `"${exe}"`
   }
-  adapter._cliResolved = cli
   return cli
 }
 
 /** 探测命令是否在 PATH 中（取命令首词，兼容带参数/占位符的 cli 字段） */
 async function commandExists(command) {
-  const name = String(command || '').trim().split(/\s+/)[0]
+  const value = String(command || '').trim()
+  if (value && exists(value)) return true
+  const name = /^"([^"]+)"/.exec(value)?.[1] || value.split(/\s+/)[0]
   if (!name) return false
   try {
     const { stdout } = await execFile('where', [name], { windowsHide: true, timeout: 4000 })

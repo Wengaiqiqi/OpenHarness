@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **Harness 管理**：自动扫描本机已安装的桌面级 Agent（Claude Desktop / Cursor / Windsurf / Trae / VS Code / CherryStudio / OpenClaw），支持一键启动、打开配置、注入 MCP
+- **Harness 管理**：检测 Claude Desktop / Claude Code / Codex / Cursor / Windsurf / Trae / OpenClaw 等 Harness；启动、配置模型与 MCP 注入能力按各适配器显示
 - **MCP 中心**：集中注册 MCP Server（STDIO / HTTP），批量注入到各 Harness 的配置文件（注入前自动备份原文件为 `.openharness.bak`）
 - **模型服务**：统一配置 LLM Provider（OpenAI 兼容 / Anthropic / 火山方舟 Ark），一处配置处处可用
 - **统一对话**：多模型流式对话（SSE），随时切换 Provider 与模型
@@ -17,8 +17,11 @@ npm install
 npm run dev      # 开发模式
 npm test         # 隔离回归测试，不读取真实密钥或调用真实模型
 npm run build    # 构建
+npm run test:electron # 构建后验证真实 Electron 页面、IPC、聊天保存与 PTY；使用假响应
 npm run dist     # 打包安装程序（electron-builder）
 ```
+
+开发环境需要 Node.js 22.12+（本次复核使用 24.14）。Windows 打包复用 node-pty 随包提供、已通过 Electron 烟雾测试的原生预编译文件，关闭重复源码重编译。新增原生依赖、升级 node-pty 或更换平台/架构时，先重新验证预编译支持；不支持时恢复重编译并安装相应工具链。
 
 ## 架构
 
@@ -36,7 +39,7 @@ src/
 ## 安全说明
 
 - 渲染进程 `contextIsolation: true`，`nodeIntegration: false`，所有系统能力通过 preload 白名单 IPC 暴露
-- API Key 与会话数据保存在本地 `userData`（electron-store），不上传任何服务器
+- API Key 与会话数据保存在本地 `userData`（electron-store，未额外加密）；发起对话时，请求与认证信息会发送给所选 Provider
 - 注入 MCP 前自动备份目标配置文件
 
 模型代理使用每次安装独立的随机访问令牌。升级旧版本后，请在各 Harness 的「配置模型」中重新保存并重启 Harness；旧版固定令牌不再接受。模型路由按保存的选择恢复，同名模型不能同时绑定不同提供商，未知模型会明确报错。

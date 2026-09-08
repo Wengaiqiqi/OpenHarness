@@ -17,7 +17,7 @@ const dsh = {
   async detect() {
     const configPath = firstExists(this.configCandidates)
     const binary = await commandExists(this.cli)
-    return { installed: binary && !!configPath, exePath: null, configPath, canInjectMcp: false, canConfigureModel: true }
+    return { installed: binary, exePath: null, configPath, canInjectMcp: false, canConfigureModel: true }
   },
   configPath() {
     return firstExists(this.configCandidates) || this.configCandidates[0]

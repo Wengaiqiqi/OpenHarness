@@ -94,6 +94,17 @@ test('settings patch preserves unrelated settings and rejects unknown fields', (
   assert.throws(() => s.call('db:patchSettings', { arbitrary: true }))
 })
 
+test('generic storage cannot bypass provider validation or overwrite the proxy token', () => {
+  const s = setup()
+  for (const key of ['providers', 'proxyToken', 'settings.theme', '__proto__']) {
+    assert.throws(() => s.call('db:set', key, []))
+    assert.throws(() => s.call('db:get', key))
+  }
+  assert.throws(() => s.call('db:set', 'sessions', {}))
+  s.call('db:set', 'sessions', [{ id: 'test', messages: [] }])
+  assert.equal(s.call('db:get', 'sessions')[0].id, 'test')
+})
+
 test('quit waits for external window release before terminating', async () => {
   const s = setup()
   let finish
@@ -106,4 +117,59 @@ test('quit waits for external window release before terminating', async () => {
   finish()
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(s.quits(), 1)
+})
+
+test('late detection and leaving the workspace cannot reactivate an older open', async () => {
+  const s = setup()
+  const pending = []
+  let latest = null
+  let active = null
+  const parked = []
+  s.context.scanSystemApps = async () => null
+  s.context.resolveCliCommand = async () => 'fake-cli'
+  s.adapter.usePty = true
+  s.adapter.detect = () => new Promise((resolve) => pending.push(resolve))
+  s.embed.setLatest = (id) => { latest = id }
+  s.embed.isLatest = (id) => latest === id
+  s.embed.hideAll = () => { latest = null }
+  s.embed.parkForNonNative = (id) => parked.push(id)
+  s.context.pty.setLatest = () => {}
+  s.context.pty.open = (id) => { if (latest === id) active = id; return { ok: true } }
+  vm.runInContext('mainWindow = {}', s.context)
+  const first = s.call('embed:open', 'first')
+  await new Promise(setImmediate)
+  const second = s.call('embed:open', 'second')
+  await new Promise(setImmediate)
+  pending[1]({ installed: true })
+  await second
+  pending[0]({ installed: true })
+  await first
+  assert.equal(active, 'second')
+  assert.deepEqual(parked, ['second'])
+  const third = s.call('embed:open', 'third')
+  await new Promise(setImmediate)
+  s.call('embed:hide')
+  pending[2]({ installed: true })
+  await third
+  assert.deepEqual(parked, ['second'])
+})
+
+test('release all waits for opens before closing their newly created terminals', async () => {
+  const s = setup()
+  let finish
+  const order = []
+  const pending = new Promise((resolve) => { finish = resolve })
+  s.context.pendingOpen = pending
+  vm.runInContext("inflightOpens.set('pending', pendingOpen)", s.context)
+  s.context.pty.setLatest = () => {}
+  s.context.pty.closeAll = () => order.push('close')
+  s.embed.releaseAll = async () => order.push('release')
+  const releasing = s.call('embed:releaseAll')
+  await new Promise(setImmediate)
+  assert.equal((await s.call('embed:open', 'another')).ok, false)
+  assert.deepEqual(order, [])
+  order.push('opened')
+  finish()
+  await releasing
+  assert.deepEqual(order, ['opened', 'close', 'release'])
 })

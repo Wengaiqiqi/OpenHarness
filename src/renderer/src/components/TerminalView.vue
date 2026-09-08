@@ -152,6 +152,7 @@ onBeforeUnmount(() => {
   offExit?.()
   inputDisposable?.dispose()
   term?.dispose()
+  term = null
 })
 </script>
 

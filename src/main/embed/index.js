@@ -29,7 +29,7 @@ export function setLatest(id) {
   latestOpenId = id
 }
 
-function isLatest(harnessId) {
+export function isLatest(harnessId) {
   return latestOpenId === harnessId
 }
 
@@ -292,14 +292,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
   // 已附着：贴合新容器矩形后直接激活
   if (attached.has(harnessId)) {
     const a = attached.get(harnessId)
-    if (initialRect) {
-      bridge.fire(
-        'move', a.hwnd,
-        Math.round(initialRect.x), Math.round(initialRect.y),
-        Math.round(initialRect.width), Math.round(initialRect.height)
-      )
-    }
-    activate(harnessId, initialRect)
+    if (isLatest(harnessId)) activate(harnessId, initialRect)
     return { ok: true, hwnd: a.hwnd, reactivated: true }
   }
 
@@ -307,7 +300,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
   // 不挪开的话加载动画会被它盖住，用户看到的就是"旧界面卡住不动"。
   // 同时停掉看门狗，否则它会把停靠的窗口拉回容器。
   const prevActive = attached.get(activeId)
-  if (prevActive && activeId !== harnessId) {
+  if (isLatest(harnessId) && prevActive && activeId !== harnessId) {
     parkOffscreen(prevActive)
     setClipRect(null)
   }
@@ -333,7 +326,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
       // 兜底：服务进程自身（如 node 再启子进程）可能创建的控制台窗口，一并隐藏
       bridge.send('hidebyport', String(port)).catch(() => {})
       if (!ok) {
-        await bridge.send('killport', String(port))
+        pty.closeSilent(harnessId)
         return { ok: false, message: `服务未能在预期时间内启动（${cli}）` }
       }
       webServices.set(harnessId, { port })
