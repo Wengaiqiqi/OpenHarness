@@ -11,8 +11,8 @@ const harnesses = ref([])
 const loading = ref(false)
 
 const features = [
-  { title: 'Harness 聚合', desc: '检测并管理本机桌面级 Agent Harness：Claude Desktop、Cursor、Trae、Windsurf、VS Code 等', path: '/harness', icon: 'Box' },
-  { title: '模型服务', desc: '统一配置 Provider（OpenAI 兼容 / Anthropic / 火山方舟），一处配置处处可用', path: '/providers', icon: 'Cpu' },
+  { title: 'Harness 聚合', desc: '检测并管理本机 Agent Harness：Claude Desktop、Codex、Zcode、Deepseek Harness、Cursor、Hermes', path: '/harness', icon: 'Box' },
+  { title: '模型服务', desc: '统一配置 Provider（OpenAI / Anthropic / 协议支持），一处配置处处可用', path: '/providers', icon: 'Cpu' },
   { title: 'MCP 中心', desc: '集中注册 MCP Server，一键注入到各 Harness 的配置文件', path: '/mcp', icon: 'Connection' },
   { title: '统一对话', desc: '多模型流式对话，随时切换 Provider 与模型', path: '/chat', icon: 'ChatDotRound' }
 ]
