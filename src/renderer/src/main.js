@@ -4,7 +4,7 @@ import ElementPlus from 'element-plus'
 import { ElMessage } from 'element-plus'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
-import { HomeFilled, ChatDotRound, Monitor, Box, Cpu, Connection, Setting, Loading, ArrowDown, Link } from '@element-plus/icons-vue'
+import { HomeFilled, ChatDotRound, Monitor, Box, Cpu, Connection, Collection, Setting, Loading, ArrowDown, Link } from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
 import './styles/main.scss'
@@ -29,7 +29,7 @@ window.addEventListener('unhandledrejection', (e) =>
 )
 window.addEventListener('error', (e) => surfaceError('脚本错误', e.error || e.message))
 
-for (const [name, comp] of Object.entries({ HomeFilled, ChatDotRound, Monitor, Box, Cpu, Connection, Setting, Loading, ArrowDown, Link })) {
+for (const [name, comp] of Object.entries({ HomeFilled, ChatDotRound, Monitor, Box, Cpu, Connection, Collection, Setting, Loading, ArrowDown, Link })) {
   app.component(name, comp)
 }
 

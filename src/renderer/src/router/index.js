@@ -8,6 +8,7 @@ const routes = [
   { path: '/harness', name: 'harness', component: () => import('@/views/HarnessView.vue') },
   { path: '/providers', name: 'providers', component: () => import('@/views/ProvidersView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('@/views/McpView.vue') },
+  { path: '/skills', name: 'skills', component: () => import('@/views/SkillsView.vue') },
   { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue') }
 ]
 

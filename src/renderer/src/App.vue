@@ -15,6 +15,7 @@ const navs = [
   { path: '/harness', name: 'Harness', icon: 'Box' },
   { path: '/providers', name: '模型服务', icon: 'Cpu' },
   { path: '/mcp', name: 'MCP', icon: 'Connection' },
+  { path: '/skills', name: 'Skills', icon: 'Collection' },
   { path: '/settings', name: '设置', icon: 'Setting' }
 ]
 
@@ -98,6 +99,8 @@ onMounted(() => store.init())
   flex-direction: column;
   gap: 4px;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .rail-item {

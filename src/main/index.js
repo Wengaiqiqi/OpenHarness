@@ -10,6 +10,7 @@ import * as embed from './embed'
 import { resolveCliCommand, scanSystemApps } from './harnesses/base'
 import * as pty from './pty'
 import { buildModelRoutes } from './model-routing'
+import { createSkillService } from './skills'
 
 // 主进程兜底：任何未捕获异常只记日志，绝不弹错误对话框阻塞应用
 process.on('uncaughtException', (e) => {
@@ -253,6 +254,25 @@ ipcMain.handle('harness:openConfig', async (_e, id) => {
 })
 
 /* ---------------- IPC: MCP 管理 ---------------- */
+// Lazy creation also keeps startup independent of the skills filesystem.
+let skillService
+function skills() {
+  return skillService ||= createSkillService({ root: path.join(app.getPath('userData'), 'skills') })
+}
+ipcMain.handle('skills:list', () => skills().list())
+ipcMain.handle('skills:detail', (_e, id) => skills().detail(id))
+ipcMain.handle('skills:scan', () => skills().scan())
+ipcMain.handle('skills:install', (_e, source, folder) => skills().install(source, folder))
+ipcMain.handle('skills:sync', (_e, id, targets) => skills().sync(id, targets))
+ipcMain.handle('skills:update', (_e, id) => skills().update(id))
+ipcMain.handle('skills:remove', (_e, id) => skills().remove(id))
+ipcMain.handle('skills:addTarget', (_e, target) => skills().addTarget(target))
+ipcMain.handle('skills:removeTarget', (_e, id) => skills().removeTarget(id))
+ipcMain.handle('skills:pickDirectory', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0]
+})
+
 ipcMain.handle('mcp:getAll', () => store.get('mcpServers'))
 
 ipcMain.handle('mcp:save', (_e, server) => {

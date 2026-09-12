@@ -23,6 +23,17 @@ contextBridge.exposeInMainWorld('api', {
   proxyStatus: () => invoke('proxy:status'),
 
   /* MCP */
+  skillsList: () => invoke('skills:list'),
+  skillsDetail: (id) => invoke('skills:detail', id),
+  skillsScan: () => invoke('skills:scan'),
+  skillsInstall: (source, folder) => invoke('skills:install', source, folder),
+  skillsSync: (id, targets) => invoke('skills:sync', id, targets),
+  skillsUpdate: (id) => invoke('skills:update', id),
+  skillsRemove: (id) => invoke('skills:remove', id),
+  skillsAddTarget: (target) => invoke('skills:addTarget', target),
+  skillsRemoveTarget: (id) => invoke('skills:removeTarget', id),
+  skillsPickDirectory: () => invoke('skills:pickDirectory'),
+
   mcpGetAll: () => invoke('mcp:getAll'),
   mcpSave: (server) => invoke('mcp:save', server),
   mcpRemove: (id) => invoke('mcp:remove', id),
