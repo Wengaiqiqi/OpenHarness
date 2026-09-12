@@ -9,7 +9,7 @@
 - **Skills 中心**：本地/Git 导入、扫描已有 Skill、搜索与内容预览、更新、按工具同步/停用及删除；支持自定义工具和项目目录
 - **模型服务**：统一配置 LLM Provider（OpenAI 兼容 / Anthropic / 火山方舟 Ark），一处配置处处可用
 - **统一对话**：多模型流式对话（SSE），随时切换 Provider 与模型
-- **深浅主题**：CherryStudio 风格深色/浅色主题
+- **深浅主题**：深色/浅色主题
 
 ## 开发
 
@@ -22,7 +22,7 @@ npm run test:electron # 构建后验证真实 Electron 页面、IPC、聊天保�
 npm run dist     # 打包安装程序（electron-builder）
 ```
 
-开发环境需要 Node.js 22.12+（本次复核使用 24.14）。Windows 打包复用 node-pty 随包提供、已通过 Electron 烟雾测试的原生预编译文件，关闭重复源码重编译。新增原生依赖、升级 node-pty 或更换平台/架构时，先重新验证预编译支持；不支持时恢复重编译并安装相应工具链。
+开发环境需要 Node.js 22.12+。Windows 打包复用 node-pty 随包提供、已通过 Electron 烟雾测试的原生预编译文件，关闭重复源码重编译。新增原生依赖、升级 node-pty 或更换平台/架构时，先重新验证预编译支持；不支持时恢复重编译并安装相应工具链。
 
 ## 架构
 
