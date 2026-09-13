@@ -21,7 +21,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('db:set', (_e, key, value) => { data[key] = value; return true })
   ipcMain.handle('db:patchSettings', (_e, patch) => Object.assign(data.settings, patch))
   ipcMain.handle('app:syncThemeOverlay', () => true)
-  ipcMain.handle('harness:list', () => [])
+  let harnessList = [
+    { id: 'codex', name: 'Codex', color: '#10a37f', icon: 'https://cdn.simpleicons.org/openai/10a37f', installed: true },
+    { id: 'claude-code', name: 'Claude Code', color: '#d97757', icon: 'icons/claude.svg', installed: true },
+    { id: 'dsh', name: 'DeepSeek Harness', color: '#4d6bfe', icon: 'https://cdn.simpleicons.org/deepseek/4d6bfe', installed: false }
+  ]
+  ipcMain.handle('harness:list', () => harnessList)
   const { createSkillService } = await import(pathToFileURL(path.join(root, 'src/main/skills.js')).href)
   const skillService = createSkillService({ root: path.join(dir, 'skills'), home: path.join(dir, 'home'), env: {} })
   const skillSource = path.join(dir, 'smoke-skill')
@@ -41,6 +46,9 @@ app.whenReady().then(async () => {
     fs.mkdirSync(folder, { recursive: true })
     fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: Local Skill ${i}\ndescription: ${i === 0 ? '中文检索示例' : 'A local skill for your workflow'}\n---\n# Example`)
   }
+  const existingCodex = path.join(dir, 'home', '.codex', 'skills', 'existing-codex')
+  fs.mkdirSync(existingCodex, { recursive: true })
+  fs.writeFileSync(path.join(existingCodex, 'SKILL.md'), '---\nname: Existing Codex Skill\n---\n# Existing')
   fs.mkdirSync(path.join(longToolPath, 'long-label'), { recursive: true })
   fs.writeFileSync(path.join(longToolPath, 'long-label', 'SKILL.md'), '---\nname: Long label fixture\n---\n# Example')
   ipcMain.handle('provider:getAll', () => [{ id: 'test', name: 'Test', models: ['fake'], apiKey: 'fake', baseUrl: 'https://example.test' }])
@@ -88,11 +96,16 @@ app.whenReady().then(async () => {
   })()`)
   await waitFor("!!document.querySelector('.skills-page')")
   assert.equal(await win.webContents.executeJavaScript("!![...document.querySelectorAll('button')].find(b => b.textContent.trim() === '导入 Skill' && b.getClientRects().length)"), false)
-  await waitFor("document.querySelectorAll('.harness-skill-card').length >= 1")
+  await waitFor("document.querySelectorAll('.harness-skill-card').length === 3")
+  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.harness-skill-card .harness-icon').length"), 3)
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]')?.textContent.includes('1')"), true)
+  harnessList = [...harnessList, { id: 'cursor', name: 'Cursor', color: '#4b8bbe', icon: 'https://cdn.simpleicons.org/cursor/4b8bbe', installed: true }]
+  win.webContents.send('harness:updated', harnessList)
+  await waitFor("document.querySelectorAll('.harness-skill-card').length === 4")
   await clickText('Skill 管理')
   await waitFor("document.querySelector('.skills-page.is-manage')")
   await clickText('扫描本机')
-  await waitFor("document.querySelectorAll('.scan-item').length === 25")
+  await waitFor("document.querySelectorAll('.scan-item').length === 26")
   for (const [width, height, zoom] of [[1280, 820, 1], [960, 600, 1], [1600, 900, 1], [960, 600, 1.25]]) {
     win.setContentSize(width, height)
     win.webContents.setZoomFactor(zoom)
@@ -108,7 +121,7 @@ app.whenReady().then(async () => {
     })()`)
     assert.ok(fit.uniform && fit.bounded && fit.fixedHeight && fit.noHorizontalOverflow && fit.noPageOverflow, JSON.stringify(fit))
   }
-  for (const [query, count] of [['  LOCAL SKILL 12  ', 1], ['中文检索', 1], ['Claude Code', 24], ['scan-23', 1], ['no-match-example', 0], ['', 25]]) {
+  for (const [query, count] of [['  LOCAL SKILL 12  ', 1], ['中文检索', 1], ['Claude Code', 24], ['scan-23', 1], ['no-match-example', 0], ['', 26]]) {
     await win.webContents.executeJavaScript(`(() => {
       const input = document.querySelector('input[aria-label="搜索扫描结果"]')
       input.value = ${JSON.stringify(query)}; input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -137,9 +150,9 @@ app.whenReady().then(async () => {
   assert.equal(imported.length, 2)
   assert.ok(imported.every((skill) => skill.targets.some((item) => item.id === 'codex' && item.state === 'on')))
   await win.webContents.executeJavaScript("document.querySelector('.manage-back').click()")
-  await waitFor("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]')?.textContent.includes('2')")
+  await waitFor("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]')?.textContent.includes('3')")
   await win.webContents.executeJavaScript("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]').click()")
-  await waitFor("document.querySelector('.harness-detail') && document.querySelectorAll('.detail-skill').length === 2")
+  await waitFor("document.querySelector('.harness-detail') && document.querySelectorAll('.detail-skill').length === 3")
   const terminalOutput = await new Promise((resolve, reject) => {
     let output = ''
     terminal = pty.spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'echo NATIVE_PTY_OK'], { cols: 80, rows: 24, cwd: dir, env: process.env })

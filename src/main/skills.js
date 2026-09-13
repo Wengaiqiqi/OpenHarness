@@ -45,7 +45,17 @@ export function createSkillService({ root, home = os.homedir(), env = process.en
     ['cursor', 'Cursor', path.join(home, '.cursor', 'skills')],
     ['opencode', 'OpenCode', path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'opencode', 'skills')],
     ['agents', '共享 Agents', path.join(home, '.agents', 'skills')],
-    ['openclaw', 'OpenClaw', path.join(home, '.openclaw', 'skills')]
+    ['openclaw', 'OpenClaw', path.join(home, '.openclaw', 'skills')],
+    ['grok-build', 'Grok Build', path.join(home, '.grok', 'skills')],
+    ['pi', 'Pi', path.join(home, '.pi', 'agent', 'skills')],
+    ['kimi-code', 'Kimi Code', path.join(home, '.kimi-code', 'skills')],
+    ['dsh', 'DeepSeek Harness', path.join(home, '.dsh', 'skills')],
+    ['minimax-code', 'MiniMax Code', path.join(home, '.minimax', 'skills')],
+    ['prime-agent', 'Prime Agent', path.join(home, '.prime', 'skills')],
+    ['windsurf', 'Windsurf', path.join(home, '.codeium', 'windsurf', 'skills')],
+    ['trae', 'Trae', path.join(home, '.trae', 'skills')],
+    ['zcode', 'ZCode', path.join(home, '.zcode', 'skills')],
+    ['hermes', 'Hermes', path.join(home, '.hermes', 'skills')]
   ].map(([id, name, dir]) => ({ id, name, path: path.resolve(dir) }))
   function targets() {
     const saved = readJson(targetsFile)
@@ -67,6 +77,22 @@ export function createSkillService({ root, home = os.homedir(), env = process.en
     if (s.isSymbolicLink() && path.resolve(path.dirname(dest), fs.readlinkSync(dest)) === skill.path) return 'on'
     return 'conflict'
   }
+  function ownedSkills(target) {
+    const result = []
+    try {
+      for (const d of fs.readdirSync(target.path, { withFileTypes: true })) {
+        if (d.name.startsWith('.')) continue
+        const p = path.join(target.path, d.name)
+        try {
+          if (!fs.statSync(p).isDirectory()) continue
+          const real = fs.realpathSync(p)
+          const m = metadata(real)
+          result.push({ path: p, realPath: real, folder: d.name, name: m.name, description: m.description })
+        } catch {}
+      }
+    } catch {}
+    return result
+  }
   function list() {
     const allTargets = targets()
     const skills = [], errors = []
@@ -77,7 +103,12 @@ export function createSkillService({ root, home = os.homedir(), env = process.en
         skills.push({ ...s, ...metadata(s.path, s.folder), content: undefined, targets: allTargets.map(t => ({ id: t.id, state: state(s, t) })) })
       } catch (e) { errors.push(`${d.name}: ${e.message}`) }
     }
-    return { root, skills, targets: allTargets, errors }
+    const managedByPath = new Map(skills.map((skill) => [pathKey(path.resolve(skill.path)), skill.id]))
+    const targetsWithSkills = allTargets.map((target) => ({
+      ...target,
+      skills: ownedSkills(target).map(({ realPath, ...skill }) => ({ ...skill, id: managedByPath.get(pathKey(realPath)) || null }))
+    }))
+    return { root, skills, targets: targetsWithSkills, errors }
   }
   async function materialize(source, destination) {
     if (!source || !['local', 'git'].includes(source.type)) throw new Error('无效来源')
@@ -130,7 +161,7 @@ export function createSkillService({ root, home = os.homedir(), env = process.en
               const real = fs.realpathSync(p)
               if (inside(root, real) || seen.has(real) || !stat(path.join(real, 'SKILL.md'))) continue
               const m = metadata(real)
-              found.push({ path: p, tool: t.name, name: m.name, description: m.description })
+              found.push({ path: p, targetId: t.id, tool: t.name, name: m.name, description: m.description })
               seen.add(real)
             } catch (e) { errors.push(`${t.name}/${d.name}: ${e.message}`) }
           }

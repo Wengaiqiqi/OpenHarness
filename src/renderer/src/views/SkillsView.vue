@@ -3,8 +3,11 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, FolderOpened, ArrowLeft, Collection } from '@element-plus/icons-vue'
 import { api } from '@/api'
+import { iconFallback } from '@/icon-fallback'
+import { useAppStore } from '@/store/app'
 
 const emptyData = { skills: [], targets: [], errors: [], root: '' }
+const appStore = useAppStore()
 const data = ref(emptyData)
 const harnesses = ref([])
 const busy = ref(false)
@@ -28,18 +31,33 @@ const targetsVisible = ref(false)
 const form = ref({ type: 'local', path: '', url: '', subdir: '', folder: '' })
 const target = ref({ name: '', path: '' })
 
-const targetCards = computed(() => data.value.targets
-  .map((target) => {
-    const harness = harnesses.value.find((item) => item.id === target.id)
-    const skills = data.value.skills.filter((skill) => skill.targets.some((item) => item.id === target.id && item.state === 'on'))
-    return { ...target, harness, skills, installed: !!harness?.installed, label: harness?.name || target.name }
+const targetCards = computed(() => harnesses.value
+  .map((harness) => {
+    const target = data.value.targets.find((item) => item.id === harness.id)
+    return {
+      ...harness,
+      target,
+      path: target?.path || '',
+      exists: !!target?.exists,
+      skills: target?.skills || [],
+      syncSupported: !!target
+    }
   })
-  .sort((a, b) => Number(b.installed || b.exists) - Number(a.installed || a.exists)))
+  .sort((a, b) => Number(b.installed) - Number(a.installed)))
+
+const customTargets = computed(() => data.value.targets
+  .filter((target) => !harnesses.value.some((harness) => harness.id === target.id))
+  .map((target) => ({ ...target, installed: false, syncSupported: true })))
+
+const syncTargets = computed(() => [
+  ...targetCards.value.filter((card) => card.syncSupported),
+  ...customTargets.value
+])
 
 const overviewCards = computed(() => {
   const q = overviewQuery.value.trim().toLowerCase()
   if (!q) return targetCards.value
-  return targetCards.value.filter((card) => `${card.label} ${card.path} ${card.skills.map((skill) => skill.name).join(' ')}`.toLowerCase().includes(q))
+  return targetCards.value.filter((card) => `${card.name} ${card.path} ${card.skills.map((skill) => skill.name).join(' ')}`.toLowerCase().includes(q))
 })
 
 const scanResults = computed(() => {
@@ -66,9 +84,9 @@ async function run(fn) {
   }
 }
 
-async function load() {
+async function load(force = false) {
   await run(async () => {
-    const [skillsResult, harnessResult] = await Promise.allSettled([api.skillsList(), api.harnessList()])
+    const [skillsResult, harnessResult] = await Promise.allSettled([api.skillsList(), api.harnessList(force)])
     if (skillsResult.status === 'fulfilled') data.value = skillsResult.value || emptyData
     else throw skillsResult.reason
     harnesses.value = harnessResult.status === 'fulfilled' ? harnessResult.value || [] : []
@@ -156,7 +174,7 @@ async function importSelected() {
     importedScan.value = new Set([...importedScan.value, ...imported])
     importVisible.value = false
     if (failed.length) error.value = `已导入 ${imported.length} 个，失败 ${failed.length} 个：${failed.join('；')}`
-    else ElMessage.success(`已将 ${imported.length} 个 Skill 导入并同步到 ${selectedTargets.value.length} 个 Harness`)
+    else ElMessage.success(`已将 ${imported.length} 个 Skill 导入到 ${selectedTargets.value.length} 个 Harness`)
   })
 }
 
@@ -174,7 +192,7 @@ async function saveSkillSync() {
   await run(async () => {
     data.value = await api.skillsSync(syncing.value.id, selectedSyncTargets.value)
     syncing.value = null
-    ElMessage.success('同步状态已保存')
+    ElMessage.success('目标 Harness 已保存')
   })
 }
 
@@ -202,7 +220,7 @@ async function installManual() {
       : { type: 'git', url: form.value.url.trim(), subdir: form.value.subdir.trim() }
     data.value = await api.skillsInstall(source, form.value.folder.trim())
     addVisible.value = false
-    ElMessage.success('已导入管理库，请在管理库中选择同步 Harness')
+    ElMessage.success('已导入管理库，请在管理库中选择目标 Harness')
   })
 }
 
@@ -246,7 +264,10 @@ async function removeTarget(id) {
 let offHarnessUpdated = null
 onMounted(() => {
   load()
-  if (api.onHarnessUpdated) offHarnessUpdated = api.onHarnessUpdated((list) => { harnesses.value = list || [] })
+  if (api.onHarnessUpdated) offHarnessUpdated = api.onHarnessUpdated(async (list) => {
+    harnesses.value = list || []
+    try { data.value = (await api.skillsList()) || emptyData } catch (e) { error.value = e.message || String(e) }
+  })
 })
 onUnmounted(() => offHarnessUpdated?.())
 </script>
@@ -257,35 +278,36 @@ onUnmounted(() => offHarnessUpdated?.())
       <div class="page-head">
         <div>
           <h1 class="page-title">Skills 中心</h1>
-          <p class="page-sub">按 Harness 查看已同步的 Skill，统一维护共享目录</p>
+          <p class="page-sub">按 Harness 查看本机已有的 Skill，按需导入到指定目标</p>
         </div>
         <div class="actions">
-          <el-button :icon="Refresh" :disabled="busy" @click="load">刷新</el-button>
+          <el-button :icon="Refresh" :disabled="busy" @click="load(true)">刷新</el-button>
           <el-button type="primary" :icon="Collection" :disabled="busy" @click="enterManagement">Skill 管理</el-button>
         </div>
       </div>
       <el-alert v-if="error" class="notice" type="error" :closable="false" :title="error" role="alert" />
       <el-alert v-for="item in data.errors" :key="item" class="notice" type="warning" :closable="false" :title="item" />
       <div class="overview-toolbar">
-        <el-input v-model="overviewQuery" :prefix-icon="Search" placeholder="搜索 Harness 或已同步 Skill" clearable aria-label="搜索 Harness" />
+        <el-input v-model="overviewQuery" :prefix-icon="Search" placeholder="搜索 Harness 或 Skill" clearable aria-label="搜索 Harness" />
         <span class="muted">{{ targetCards.length }} 个 Harness</span>
       </div>
       <div v-if="overviewCards.length" class="harness-grid">
         <article v-for="card in overviewCards" :key="card.id" class="card harness-skill-card" :data-target-id="card.id" tabindex="0" @click="openHarnessDetail(card)" @keydown.enter="openHarnessDetail(card)">
           <div class="harness-card-head">
-            <div class="harness-avatar" :style="{ background: card.harness?.color || 'var(--oh-primary)' }">{{ card.label.slice(0, 2).toUpperCase() }}</div>
+            <img v-if="card.icon" :src="card.icon" class="harness-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" />
+            <div v-else class="harness-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ card.name.slice(0, 2).toUpperCase() }}</div>
             <div class="harness-card-title">
-              <h2>{{ card.label }}</h2>
+              <h2>{{ card.name }}</h2>
               <el-tag size="small" :type="card.installed ? 'success' : card.exists ? 'info' : 'warning'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag>
             </div>
           </div>
-          <div class="harness-card-count"><strong>{{ card.skills.length }}</strong><span>个已同步 Skill</span></div>
+          <div class="harness-card-count"><strong>{{ card.skills.length }}</strong><span>个本机 Skill</span></div>
           <div v-if="card.skills.length" class="harness-skill-list">
-            <div v-for="skill in card.skills.slice(0, 4)" :key="skill.id" class="harness-skill-row" :title="skill.name"><span class="skill-dot" />{{ skill.name }}</div>
+            <div v-for="skill in card.skills.slice(0, 4)" :key="skill.path" class="harness-skill-row" :title="skill.name"><span class="skill-dot" />{{ skill.name }}</div>
             <div v-if="card.skills.length > 4" class="harness-more">还有 {{ card.skills.length - 4 }} 个，点击查看全部</div>
           </div>
-          <div v-else class="harness-empty">尚未同步 Skill</div>
-          <div class="harness-card-foot"><span class="path" :title="card.path">{{ card.path }}</span><el-button text type="primary" @click.stop="openHarnessDetail(card)">查看详情</el-button></div>
+          <div v-else class="harness-empty">尚未发现 Skill</div>
+          <div class="harness-card-foot"><span class="path" :title="card.path">{{ card.path || '未配置 Skill 目录' }}</span><el-button text type="primary" @click.stop="openHarnessDetail(card)">查看详情</el-button></div>
         </article>
       </div>
       <div v-else class="empty-state">
@@ -301,10 +323,10 @@ onUnmounted(() => offHarnessUpdated?.())
         <div>
           <div class="manage-back" @click="leaveManagement"><el-icon><ArrowLeft /></el-icon>返回概览</div>
           <h1 class="page-title">Skill 管理</h1>
-          <p class="page-sub">扫描本机 Skill，勾选后一次导入并同步到指定 Harness</p>
+          <p class="page-sub">扫描本机 Skill，勾选后导入到指定 Harness</p>
         </div>
         <div class="actions">
-          <el-button :icon="Refresh" :disabled="busy" @click="load">刷新</el-button>
+          <el-button :icon="Refresh" :disabled="busy" @click="load(true)">刷新</el-button>
           <el-button :disabled="busy" @click="targetsVisible = true">同步目录</el-button>
           <el-button :disabled="busy" @click="openAdd()">手动导入</el-button>
           <el-button :disabled="busy" @click="scan">扫描本机</el-button>
@@ -331,7 +353,7 @@ onUnmounted(() => offHarnessUpdated?.())
       </section>
 
       <section class="manage-section library-section">
-        <div class="section-head"><div><h2>管理库</h2><p class="muted">已导入的 Skill 会以链接方式同步到各 Harness。</p></div><div class="library-tools"><el-input v-model="libraryQuery" :prefix-icon="Search" placeholder="搜索管理库" clearable aria-label="搜索管理库" /><span class="muted">{{ data.skills.length }} 个 Skill</span></div></div>
+        <div class="section-head"><div><h2>管理库</h2><p class="muted">集中查看、更新和删除已导入的 Skill。</p></div><div class="library-tools"><el-input v-model="libraryQuery" :prefix-icon="Search" placeholder="搜索管理库" clearable aria-label="搜索管理库" /><span class="muted">{{ data.skills.length }} 个 Skill</span></div></div>
         <div v-if="!managedSkills.length" class="manage-empty compact"><span>管理库还是空的，先扫描并导入一个 Skill。</span></div>
         <div v-else class="library-grid">
           <article v-for="skill in managedSkills" :key="skill.id" class="card library-card">
@@ -347,7 +369,7 @@ onUnmounted(() => offHarnessUpdated?.())
     <el-dialog v-model="importVisible" title="选择目标 Harness" width="min(680px, 92vw)" :close-on-click-modal="false">
       <p class="muted">已选择 {{ selectedScanItems.length }} 个 Skill。勾选目标后导入，已有同名目录不会被覆盖。</p>
       <el-checkbox-group v-model="selectedTargets" aria-label="选择目标 Harness">
-        <div v-for="card in targetCards" :key="card.id" class="import-target-row"><el-checkbox :value="card.id"><strong>{{ card.label }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></el-checkbox><div class="path">{{ card.path }}</div></div>
+        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id"><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></el-checkbox><div class="path">{{ card.path }}</div></div>
       </el-checkbox-group>
       <template #footer><el-button :disabled="busy" @click="importVisible = false">取消</el-button><el-button type="primary" :loading="busy" aria-label="导入到选中 Harness" @click="importSelected">导入到选中 Harness</el-button></template>
     </el-dialog>
@@ -355,7 +377,7 @@ onUnmounted(() => offHarnessUpdated?.())
     <el-dialog :model-value="!!syncing" title="同步工具" width="min(680px, 92vw)" :close-on-click-modal="false" @close="syncing = null">
       <p class="muted">选择「{{ syncing?.name }}」要同步到的 Harness；取消勾选会移除由本应用创建的同步链接。</p>
       <el-checkbox-group v-model="selectedSyncTargets" aria-label="选择同步 Harness">
-        <div v-for="card in targetCards" :key="card.id" class="import-target-row"><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'"><strong>{{ card.label }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></el-checkbox><div class="path">{{ card.path }}</div></div>
+        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'"><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></el-checkbox><div class="path">{{ card.path }}</div></div>
       </el-checkbox-group>
       <template #footer><el-button :disabled="busy" @click="syncing = null">取消</el-button><el-button type="primary" :loading="busy" @click="saveSkillSync">保存同步状态</el-button></template>
     </el-dialog>
@@ -377,8 +399,8 @@ onUnmounted(() => offHarnessUpdated?.())
       <template #footer><el-button :loading="busy" @click="addTarget">添加目录</el-button></template>
     </el-dialog>
 
-    <el-dialog :model-value="!!harnessDetail" :title="`${harnessDetail?.label || 'Harness'} · 已同步 Skill`" width="min(720px, 92vw)" @close="harnessDetail = null">
-      <div v-if="harnessDetail" class="harness-detail"><div class="detail-header"><div class="harness-avatar" :style="{ background: harnessDetail.harness?.color || 'var(--oh-primary)' }">{{ (harnessDetail.label || 'Harness').slice(0, 2).toUpperCase() }}</div><div><strong>{{ harnessDetail.skills.length }} 个 Skill</strong><div class="path">{{ harnessDetail.path }}</div></div></div><div v-if="harnessDetail.skills.length" class="detail-skill-list"><button v-for="skill in harnessDetail.skills" :key="skill.id" class="detail-skill" @click="openSkillDetail(skill)"><span class="skill-dot" /><span>{{ skill.name }}</span><span class="muted">查看内容 →</span></button></div><div v-else class="manage-empty compact"><span>这个 Harness 还没有同步 Skill。</span></div></div>
+    <el-dialog :model-value="!!harnessDetail" :title="`${harnessDetail?.name || 'Harness'} · 本机 Skill`" width="min(720px, 92vw)" @close="harnessDetail = null">
+      <div v-if="harnessDetail" class="harness-detail"><div class="detail-header"><img v-if="harnessDetail.icon" :src="harnessDetail.icon" class="harness-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(harnessDetail.icon || '') }" :alt="`${harnessDetail.name} 图标`" @error="iconFallback($event, harnessDetail.name, harnessDetail.color)" /><div v-else class="harness-avatar" :style="{ background: harnessDetail.color || 'var(--oh-primary)' }">{{ (harnessDetail.name || 'Harness').slice(0, 2).toUpperCase() }}</div><div><strong>{{ harnessDetail.skills.length }} 个 Skill</strong><div class="path">{{ harnessDetail.path || '未配置 Skill 目录' }}</div></div></div><div v-if="harnessDetail.skills.length" class="detail-skill-list"><div v-for="skill in harnessDetail.skills" :key="skill.path" class="detail-skill" :class="{ clickable: skill.id }" @click="skill.id && openSkillDetail(skill)"><span class="skill-dot" /><span>{{ skill.name }}</span><span class="muted">{{ skill.id ? '查看内容 →' : '本机已有' }}</span></div></div><div v-else class="manage-empty compact"><span>这个 Harness 还没有发现 Skill。</span></div></div>
     </el-dialog>
 
     <el-dialog :model-value="!!detail" :title="detail?.name || 'Skill 内容'" width="min(800px, 92vw)" @close="detail = null">
@@ -399,6 +421,8 @@ onUnmounted(() => offHarnessUpdated?.())
 .harness-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 14px; }
 .harness-skill-card { height: 274px; min-width: 0; padding: 18px; display: flex; flex-direction: column; cursor: pointer; transition: border-color var(--oh-dur) var(--oh-ease), transform var(--oh-dur) var(--oh-ease); }
 .harness-skill-card:hover, .harness-skill-card:focus-visible { border-color: var(--oh-primary); transform: translateY(-1px); outline: none; }
+.harness-icon { width: 42px; height: 42px; border-radius: 11px; object-fit: contain; flex-shrink: 0; }
+.harness-icon-dark { filter: invert(1); }
 .harness-card-head { min-width: 0; }
 .harness-avatar { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; flex-shrink: 0; color: #fff; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
 .harness-card-title { min-width: 0; flex: 1; }
@@ -456,6 +480,7 @@ onUnmounted(() => offHarnessUpdated?.())
 .detail-header strong { font-size: 18px; }
 .detail-skill-list { display: grid; gap: 6px; padding-top: 12px; max-height: 48vh; overflow: auto; }
 .detail-skill { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border: 1px solid var(--oh-border); border-radius: 9px; background: transparent; color: var(--oh-text); text-align: left; cursor: pointer; }
+.detail-skill:not(.clickable) { cursor: default; }
 .detail-skill span:nth-child(2) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-skill:hover { border-color: var(--oh-primary); }
 .skill-content { max-height: 55vh; margin-top: 14px; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--oh-border); border-radius: 8px; font: 13px/1.7 Consolas, 'JetBrains Mono', monospace; }
