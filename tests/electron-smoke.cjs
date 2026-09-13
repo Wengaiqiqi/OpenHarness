@@ -104,6 +104,20 @@ app.whenReady().then(async () => {
   await waitFor("document.querySelectorAll('.harness-skill-card').length === 4")
   await clickText('Skill 管理')
   await waitFor("document.querySelector('.skills-page.is-manage')")
+  await waitFor("document.querySelectorAll('.manage-tabs .el-tabs__item').length === 2")
+  await win.webContents.executeJavaScript(`(() => {
+    const tab = [...document.querySelectorAll('.manage-tabs .el-tabs__item')].find((item) => item.textContent.trim() === '管理库')
+    if (!tab) throw new Error('管理库 tab missing')
+    tab.click()
+  })()`)
+  await waitFor("document.querySelector('.library-section')?.getClientRects().length > 0")
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('.scan-section')?.getClientRects().length || 0"), 0)
+  await win.webContents.executeJavaScript(`(() => {
+    const tab = [...document.querySelectorAll('.manage-tabs .el-tabs__item')].find((item) => item.textContent.trim() === '扫描本机')
+    if (!tab) throw new Error('扫描本机 tab missing')
+    tab.click()
+  })()`)
+  await waitFor("document.querySelector('.scan-section')?.getClientRects().length > 0")
   await clickText('扫描本机')
   await waitFor("document.querySelectorAll('.scan-item').length === 26")
   for (const [width, height, zoom] of [[1280, 820, 1], [960, 600, 1], [1600, 900, 1], [960, 600, 1.25]]) {

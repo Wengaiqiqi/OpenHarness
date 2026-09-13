@@ -13,6 +13,7 @@ const harnesses = ref([])
 const busy = ref(false)
 const error = ref('')
 const managing = ref(false)
+const managementTab = ref('scan')
 const overviewQuery = ref('')
 const libraryQuery = ref('')
 const found = ref([])
@@ -95,6 +96,7 @@ async function load(force = false) {
 
 function enterManagement() {
   managing.value = true
+  managementTab.value = 'scan'
   error.value = ''
 }
 
@@ -250,14 +252,14 @@ async function addTarget() {
   await run(async () => {
     data.value = await api.skillsAddTarget(target.value)
     target.value = { name: '', path: '' }
-    ElMessage.success('已添加同步目录')
+    ElMessage.success('已添加 Skill 目录')
   })
 }
 
 async function removeTarget(id) {
   await run(async () => {
     data.value = await api.skillsRemoveTarget(id)
-    ElMessage.success('已移除同步目录')
+    ElMessage.success('已移除 Skill 目录')
   })
 }
 
@@ -327,43 +329,51 @@ onUnmounted(() => offHarnessUpdated?.())
         </div>
         <div class="actions">
           <el-button :icon="Refresh" :disabled="busy" @click="load(true)">刷新</el-button>
-          <el-button :disabled="busy" @click="targetsVisible = true">同步目录</el-button>
+          <el-tooltip content="配置各 Harness 实际读取 Skill 的文件夹；扫描和导入都会使用这里的目录" placement="bottom">
+            <el-button :disabled="busy" @click="targetsVisible = true">Skill 目录</el-button>
+          </el-tooltip>
           <el-button :disabled="busy" @click="openAdd()">手动导入</el-button>
           <el-button :disabled="busy" @click="scan">扫描本机</el-button>
           <el-button type="primary" :icon="Plus" :disabled="busy || !selectedScanItems.length" @click="openImport">导入 Skill</el-button>
         </div>
       </div>
       <el-alert v-if="error" class="notice" type="error" :closable="false" :title="error" role="alert" />
-      <section class="manage-section scan-section">
-        <div class="section-head">
-          <div><h2>本机扫描结果</h2><p class="muted">只显示包含 SKILL.md 的目录；原目录不会被修改。</p></div>
-          <div v-if="found.length" class="scan-tools"><el-input v-model="scanQuery" :prefix-icon="Search" placeholder="搜索名称、说明、工具或路径" clearable aria-label="搜索扫描结果" /><span class="scan-count" role="status">已选 {{ selectedScanItems.length }} · {{ scanResults.length }} / {{ found.length }}</span></div>
-        </div>
-        <div v-if="scanErrors.length" class="scan-errors"><el-alert v-for="item in scanErrors" :key="item" type="warning" :title="item" :closable="false" /></div>
-        <div v-if="!found.length" class="manage-empty"><el-icon :size="24"><Collection /></el-icon><strong>还没有扫描结果</strong><span>点击右上角「扫描本机」，把散落在各个工具里的 Skill 集中到这里。</span><el-button type="primary" :disabled="busy" @click="scan">扫描本机</el-button></div>
-        <div v-else-if="!scanResults.length" class="manage-empty"><strong>没有匹配的 Skill</strong><span>试试其他关键词。</span><el-button @click="scanQuery = ''">清空搜索</el-button></div>
-        <div v-else class="scan-grid">
-          <article v-for="skill in scanResults" :key="skill.path" class="scan-item" :class="{ selected: selectedScan.includes(skill.path), imported: isImported(skill.path) }">
-            <div class="scan-item-top"><el-checkbox :model-value="selectedScan.includes(skill.path)" :disabled="isImported(skill.path)" :aria-label="`选择 ${skill.name}`" @click.stop @change="setScanSelected(skill.path, $event)" /><el-tag size="small" effect="plain">{{ skill.tool }}</el-tag><el-tag v-if="isImported(skill.path)" size="small" type="success" effect="plain">已导入</el-tag></div>
-            <h3 :title="skill.name">{{ skill.name }}</h3>
-            <p class="scan-description">{{ skill.description || '暂无说明' }}</p>
-            <div class="scan-item-foot"><div class="path" :title="skill.path">{{ skill.path }}</div><span class="scan-state">{{ isImported(skill.path) ? '已纳入管理库' : '待导入' }}</span></div>
-          </article>
-        </div>
-      </section>
+      <el-tabs v-model="managementTab" class="manage-tabs">
+        <el-tab-pane label="扫描本机" name="scan">
+          <section class="manage-section scan-section">
+            <div class="section-head">
+              <div><h2>本机扫描结果</h2><p class="muted">只显示包含 SKILL.md 的目录；原目录不会被修改。</p></div>
+              <div v-if="found.length" class="scan-tools"><el-input v-model="scanQuery" :prefix-icon="Search" placeholder="搜索名称、说明、工具或路径" clearable aria-label="搜索扫描结果" /><span class="scan-count" role="status">已选 {{ selectedScanItems.length }} · {{ scanResults.length }} / {{ found.length }}</span></div>
+            </div>
+            <div v-if="scanErrors.length" class="scan-errors"><el-alert v-for="item in scanErrors" :key="item" type="warning" :title="item" :closable="false" /></div>
+            <div v-if="!found.length" class="manage-empty"><el-icon :size="24"><Collection /></el-icon><strong>还没有扫描结果</strong><span>点击右上角「扫描本机」，把散落在各个工具里的 Skill 集中到这里。</span><el-button type="primary" :disabled="busy" @click="scan">扫描本机</el-button></div>
+            <div v-else-if="!scanResults.length" class="manage-empty"><strong>没有匹配的 Skill</strong><span>试试其他关键词。</span><el-button @click="scanQuery = ''">清空搜索</el-button></div>
+            <div v-else class="scan-grid">
+              <article v-for="skill in scanResults" :key="skill.path" class="scan-item" :class="{ selected: selectedScan.includes(skill.path), imported: isImported(skill.path) }">
+                <div class="scan-item-top"><el-checkbox :model-value="selectedScan.includes(skill.path)" :disabled="isImported(skill.path)" :aria-label="`选择 ${skill.name}`" @click.stop @change="setScanSelected(skill.path, $event)" /><el-tag size="small" effect="plain">{{ skill.tool }}</el-tag><el-tag v-if="isImported(skill.path)" size="small" type="success" effect="plain">已导入</el-tag></div>
+                <h3 :title="skill.name">{{ skill.name }}</h3>
+                <p class="scan-description">{{ skill.description || '暂无说明' }}</p>
+                <div class="scan-item-foot"><div class="path" :title="skill.path">{{ skill.path }}</div><span class="scan-state">{{ isImported(skill.path) ? '已纳入管理库' : '待导入' }}</span></div>
+              </article>
+            </div>
+          </section>
+        </el-tab-pane>
 
-      <section class="manage-section library-section">
-        <div class="section-head"><div><h2>管理库</h2><p class="muted">集中查看、更新和删除已导入的 Skill。</p></div><div class="library-tools"><el-input v-model="libraryQuery" :prefix-icon="Search" placeholder="搜索管理库" clearable aria-label="搜索管理库" /><span class="muted">{{ data.skills.length }} 个 Skill</span></div></div>
-        <div v-if="!managedSkills.length" class="manage-empty compact"><span>管理库还是空的，先扫描并导入一个 Skill。</span></div>
-        <div v-else class="library-grid">
-          <article v-for="skill in managedSkills" :key="skill.id" class="card library-card">
-            <div class="library-title"><h3 :title="skill.name">{{ skill.name }}</h3><el-tag size="small" effect="plain">{{ skill.source.type === 'git' ? 'Git' : '本地' }}</el-tag></div>
-            <p class="description">{{ skill.description || '暂无说明' }}</p><div class="path">{{ skill.folder }}</div>
-            <div class="tags"><el-tag v-for="targetItem in skill.targets.filter((item) => item.state !== 'off')" :key="targetItem.id" size="small" :type="targetItem.state === 'on' ? 'success' : 'warning'" effect="plain">{{ data.targets.find((item) => item.id === targetItem.id)?.name }}{{ targetItem.state === 'conflict' ? ' · 同名冲突' : '' }}</el-tag><span v-if="!skill.targets.some((item) => item.state === 'on')" class="muted">尚未同步</span></div>
-            <div class="card-actions"><el-button size="small" @click="openSkillDetail(skill)">查看</el-button><el-button size="small" @click="confirmAction(skill, 'update')">更新</el-button><el-button size="small" type="primary" plain @click="openSkillSync(skill)">同步工具</el-button><el-button size="small" type="danger" plain @click="confirmAction(skill, 'remove')">删除</el-button></div>
-          </article>
-        </div>
-      </section>
+        <el-tab-pane label="管理库" name="library">
+          <section class="manage-section library-section">
+            <div class="section-head"><div><h2>管理库</h2><p class="muted">集中查看、更新和删除已导入的 Skill。</p></div><div class="library-tools"><el-input v-model="libraryQuery" :prefix-icon="Search" placeholder="搜索管理库" clearable aria-label="搜索管理库" /><span class="muted">{{ data.skills.length }} 个 Skill</span></div></div>
+            <div v-if="!managedSkills.length" class="manage-empty compact"><span>管理库还是空的，先扫描并导入一个 Skill。</span></div>
+            <div v-else class="library-grid">
+              <article v-for="skill in managedSkills" :key="skill.id" class="card library-card">
+                <div class="library-title"><h3 :title="skill.name">{{ skill.name }}</h3><el-tag size="small" effect="plain">{{ skill.source.type === 'git' ? 'Git' : '本地' }}</el-tag></div>
+                <p class="description">{{ skill.description || '暂无说明' }}</p><div class="path">{{ skill.folder }}</div>
+                <div class="tags"><el-tag v-for="targetItem in skill.targets.filter((item) => item.state !== 'off')" :key="targetItem.id" size="small" :type="targetItem.state === 'on' ? 'success' : 'warning'" effect="plain">{{ data.targets.find((item) => item.id === targetItem.id)?.name }}{{ targetItem.state === 'conflict' ? ' · 同名冲突' : '' }}</el-tag><span v-if="!skill.targets.some((item) => item.state === 'on')" class="muted">尚未同步</span></div>
+                <div class="card-actions"><el-button size="small" @click="openSkillDetail(skill)">查看</el-button><el-button size="small" @click="confirmAction(skill, 'update')">更新</el-button><el-button size="small" type="primary" plain @click="openSkillSync(skill)">同步工具</el-button><el-button size="small" type="danger" plain @click="confirmAction(skill, 'remove')">删除</el-button></div>
+              </article>
+            </div>
+          </section>
+        </el-tab-pane>
+      </el-tabs>
     </template>
 
     <el-dialog v-model="importVisible" title="选择目标 Harness" width="min(680px, 92vw)" :close-on-click-modal="false">
@@ -392,10 +402,10 @@ onUnmounted(() => offHarnessUpdated?.())
       <template #footer><el-button :disabled="busy" @click="addVisible = false">取消</el-button><el-button type="primary" :loading="busy" @click="installManual">导入</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="targetsVisible" title="同步目录" width="min(700px, 92vw)">
-      <div v-for="item in data.targets" :key="item.id" class="target-row"><strong>{{ item.name }}</strong><span class="muted"> · {{ item.exists ? '目录已存在' : '同步时创建' }}</span><el-button v-if="item.id.length === 36" text type="danger" :disabled="busy" @click="removeTarget(item.id)">移除目录</el-button><div class="path">{{ item.path }}</div></div>
-      <p class="muted">自定义工具或项目：选择该工具实际读取的 skills 目录。</p>
-      <el-form label-width="80px"><el-form-item label="工具名称"><el-input v-model="target.name" placeholder="如：项目 A · Claude Code" /></el-form-item><el-form-item label="目录"><el-input v-model="target.path"><template #append><el-button :icon="FolderOpened" aria-label="选择同步目录" @click="choose(true)" /></template></el-input></el-form-item></el-form>
+    <el-dialog v-model="targetsVisible" title="Skill 目录设置" width="min(700px, 92vw)">
+      <div v-for="item in data.targets" :key="item.id" class="target-row"><strong>{{ item.name }}</strong><span class="muted"> · {{ item.exists ? '目录已存在' : '导入时创建' }}</span><el-button v-if="item.id.length === 36" text type="danger" :disabled="busy" @click="removeTarget(item.id)">移除目录</el-button><div class="path">{{ item.path }}</div></div>
+      <p class="muted target-help">Skill 目录就是 Harness 实际读取 Skill 的文件夹。扫描本机和导入目标都会使用这里的目录；也可以添加自定义工具或项目目录。</p>
+      <el-form label-width="80px"><el-form-item label="工具名称"><el-input v-model="target.name" placeholder="如：项目 A · Claude Code" /></el-form-item><el-form-item label="Skill 目录"><el-input v-model="target.path"><template #append><el-button :icon="FolderOpened" aria-label="选择 Skill 目录" @click="choose(true)" /></template></el-input></el-form-item></el-form>
       <template #footer><el-button :loading="busy" @click="addTarget">添加目录</el-button></template>
     </el-dialog>
 
@@ -440,6 +450,9 @@ onUnmounted(() => offHarnessUpdated?.())
 .harness-card-foot .el-button { flex-shrink: 0; padding: 0 4px; }
 .is-manage .page-head { margin-bottom: 14px; }
 .manage-back { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 8px; color: var(--oh-primary); cursor: pointer; font-size: 12px; }
+.manage-tabs { margin-top: 4px; }
+.manage-tabs :deep(.el-tabs__header) { position: sticky; top: -1px; z-index: 4; margin-bottom: 0; padding-top: 2px; background: var(--oh-bg); }
+.manage-tabs :deep(.el-tabs__content) { overflow: visible; }
 .manage-section { margin-top: 18px; }
 .section-head { justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .section-head h2 { margin: 0 0 4px; font-size: 16px; }
