@@ -12,14 +12,93 @@ const stat = (p) => { try { return fs.lstatSync(p) } catch (e) { if (e.code !== 
 const inside = (root, p) => { const r = path.relative(root, p); return r === '' || (!r.startsWith('..' + path.sep) && r !== '..' && !path.isAbsolute(r)) }
 const location = (p) => stat(p) ? fs.realpathSync(p) : path.join(location(path.dirname(p)), path.basename(p))
 const pathKey = (p) => process.platform === 'win32' ? p.toLowerCase() : p
+const skillKey = (name) => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ')
+const systemDirectoryNames = new Set(['system', 'builtin', 'built-in', 'preinstalled', 'pre-installed'])
 
-function metadata(dir, fallback = path.basename(dir)) {
+function isSystemMetadata(data) {
+  if (!data || typeof data !== 'object') return false
+  if (data.od === true || (data.od && typeof data.od === 'object')) return true
+  const values = [
+    data.system, data.builtin, data.builtIn, data.preinstalled, data.preInstalled,
+    data.managedByHarness, data.scope === 'system', data.type === 'system',
+    data.metadata?.system, data.metadata?.builtin, data.metadata?.builtIn,
+    data.metadata?.preinstalled, data.metadata?.preInstalled
+  ]
+  return values.some((value) => value === true || (typeof value === 'string' && value.toLowerCase() === 'true'))
+}
+
+function systemSkillNames(dir) {
+  const names = new Set()
+  for (const filename of ['.arkcli-managed-skills.json', '.system-skills.json', '.builtin-skills.json', '.built-in-skills.json', '.preinstalled-skills.json']) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(dir, filename), 'utf8'))
+      const entries = data?.skills ?? data?.systemSkills ?? data?.builtinSkills ?? data?.builtInSkills ?? data?.preinstalledSkills
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          const name = typeof entry === 'string' ? entry : entry?.name || entry?.folder
+          if (name) names.add(String(name).toLowerCase())
+        }
+      } else if (entries && typeof entries === 'object') {
+        for (const name of Object.keys(entries)) names.add(name.toLowerCase())
+      }
+    } catch {}
+  }
+  return names
+}
+
+function hasSystemDirectory(pathname) {
+  return pathname.split(/[\\/]+/).some((part) => systemDirectoryNames.has(part.toLowerCase()))
+}
+
+function isSystemSkill(root, target, folder, real, manifestNames, metadataSystem) {
+  if (inside(root, real)) return false
+  return manifestNames.has(String(folder).toLowerCase()) || hasSystemDirectory(folder) || hasSystemDirectory(path.relative(target.path, real)) || metadataSystem
+}
+
+function groupScannedSkills(candidates) {
+  const unique = new Map()
+  for (const candidate of candidates) {
+    const key = skillKey(candidate.name)
+    if (!unique.has(key)) unique.set(key, candidate)
+  }
+  const entries = [...unique.entries()].map(([key, candidate]) => ({ key, candidate }))
+  const roots = entries.filter(({ key }) => !entries.some(({ key: other }) => other !== key && key.startsWith(`${other}-`)))
+  const grouped = new Set()
+  const found = []
+  const publicItem = ({ path, name, description }) => ({ path, name, description })
+
+  for (const root of roots) {
+    const children = entries
+      .filter(({ key }) => key !== root.key && key.startsWith(`${root.key}-`))
+      .map(({ key, candidate }) => {
+        grouped.add(key)
+        return candidate
+      })
+    grouped.add(root.key)
+    found.push({
+      ...publicItem(root.candidate),
+      children: children.map(publicItem),
+      items: [root.candidate, ...children].map(publicItem)
+    })
+  }
+  for (const { key, candidate } of entries) {
+    if (!grouped.has(key)) found.push({ ...publicItem(candidate), children: [], items: [publicItem(candidate)] })
+  }
+  return found
+}
+
+function metadata(dir, fallback = path.basename(dir), includeFlags = false) {
   const file = path.join(dir, 'SKILL.md')
   if (!stat(file)?.isFile() || fs.statSync(file).size > 1024 * 1024) throw new Error('需要包含不超过 1 MB 的 SKILL.md 普通文件')
   const content = fs.readFileSync(file, 'utf8')
   const header = content.replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   const data = header ? loadYaml(header[1], { schema: JSON_SCHEMA }) : {}
-  return { name: typeof data?.name === 'string' ? data.name : fallback, description: typeof data?.description === 'string' ? data.description : '', content }
+  return {
+    name: typeof data?.name === 'string' ? data.name : fallback,
+    description: typeof data?.description === 'string' ? data.description : '',
+    content,
+    ...(includeFlags ? { system: isSystemMetadata(data) } : {})
+  }
 }
 
 // Reject links rather than copying files outside the selected skill (or following cycles).
@@ -79,6 +158,7 @@ export function createSkillService({ root, home = os.homedir(), env = process.en
   }
   function ownedSkills(target) {
     const result = []
+    const manifestNames = systemSkillNames(target.path)
     try {
       for (const d of fs.readdirSync(target.path, { withFileTypes: true })) {
         if (d.name.startsWith('.')) continue
@@ -86,7 +166,8 @@ export function createSkillService({ root, home = os.homedir(), env = process.en
         try {
           if (!fs.statSync(p).isDirectory()) continue
           const real = fs.realpathSync(p)
-          const m = metadata(real)
+          const m = metadata(real, undefined, true)
+          if (isSystemSkill(root, target, d.name, real, manifestNames, m.system)) continue
           result.push({ path: p, realPath: real, folder: d.name, name: m.name, description: m.description })
         } catch {}
       }
@@ -149,25 +230,28 @@ export function createSkillService({ root, home = os.homedir(), env = process.en
     list,
     detail(id) { const s = item(id); return { ...s, ...metadata(s.path, s.folder) } },
     scan() {
-      const found = [], errors = [], seen = new Set()
+      const candidates = [], errors = [], seen = new Set()
       for (const t of targets()) {
         try {
           if (!stat(t.path)) continue
+          const manifestNames = systemSkillNames(t.path)
           for (const d of fs.readdirSync(t.path, { withFileTypes: true })) {
             if (d.name.startsWith('.')) continue
             try {
               const p = path.join(t.path, d.name)
               if (!fs.statSync(p).isDirectory()) continue
               const real = fs.realpathSync(p)
-              if (inside(root, real) || seen.has(real) || !stat(path.join(real, 'SKILL.md'))) continue
-              const m = metadata(real)
-              found.push({ path: p, targetId: t.id, tool: t.name, name: m.name, description: m.description })
-              seen.add(real)
+              const realKey = pathKey(real)
+              if (inside(root, real) || seen.has(realKey) || !stat(path.join(real, 'SKILL.md'))) continue
+              const m = metadata(real, undefined, true)
+              if (isSystemSkill(root, t, d.name, real, manifestNames, m.system)) continue
+              candidates.push({ path: p, targetId: t.id, tool: t.name, name: m.name, description: m.description })
+              seen.add(realKey)
             } catch (e) { errors.push(`${t.name}/${d.name}: ${e.message}`) }
           }
         } catch (e) { errors.push(`${t.name}: ${e.message}`) }
       }
-      return { found, errors }
+      return { found: groupScannedSkills(candidates), errors }
     },
     addTarget(input) { return mutate(() => {
       if (!input || typeof input.name !== 'string' || !input.name.trim() || typeof input.path !== 'string' || !path.isAbsolute(input.path)) throw new Error('请填写名称并选择绝对目录')

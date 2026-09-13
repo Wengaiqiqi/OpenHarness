@@ -31,7 +31,7 @@ const addVisible = ref(false)
 const targetsVisible = ref(false)
 const form = ref({ type: 'local', path: '', url: '', subdir: '', folder: '' })
 const target = ref({ name: '', path: '' })
-const scanCacheKey = 'openharness.skills.scan.v1'
+const scanCacheKey = 'openharness.skills.scan.v3'
 
 const targetCards = computed(() => harnesses.value
   .map((harness) => {
@@ -64,7 +64,7 @@ const overviewCards = computed(() => {
 
 const scanResults = computed(() => {
   const q = scanQuery.value.trim().toLowerCase()
-  return found.value.filter((skill) => [skill.name, skill.description, skill.tool, skill.path].some((value) => String(value || '').toLowerCase().includes(q)))
+  return found.value.filter((skill) => [skill.name, skill.description, skill.path, ...(skill.children || []).map((child) => child.name)].some((value) => String(value || '').toLowerCase().includes(q)))
 })
 
 const selectedScanItems = computed(() => found.value.filter((skill) => selectedScan.value.includes(skill.path)))
@@ -101,13 +101,16 @@ function restoreScanCache() {
     if (!cached || !Array.isArray(cached.found)) return
     found.value = cached.found
       .filter((item) => item && typeof item === 'object' && typeof item.path === 'string' && item.path)
-      .map((item) => ({
-        path: item.path,
-        targetId: typeof item.targetId === 'string' ? item.targetId : '',
-        tool: String(item.tool || ''),
-        name: String(item.name || item.path),
-        description: String(item.description || '')
-      }))
+      .map((item) => {
+        const base = { path: item.path, name: String(item.name || item.path), description: String(item.description || '') }
+        const children = Array.isArray(item.children)
+          ? item.children.filter((child) => child && typeof child.path === 'string' && child.path).map((child) => ({ path: child.path, name: String(child.name || child.path), description: String(child.description || '') }))
+          : []
+        const items = Array.isArray(item.items) && item.items.length
+          ? item.items.filter((child) => child && typeof child.path === 'string' && child.path).map((child) => ({ path: child.path, name: String(child.name || child.path), description: String(child.description || '') }))
+          : [base, ...children]
+        return { ...base, children, items }
+      })
     scanErrors.value = Array.isArray(cached.errors) ? cached.errors.filter((item) => typeof item === 'string') : []
   } catch {}
 }
@@ -156,8 +159,14 @@ function setScanSelected(path, checked) {
     : selectedScan.value.filter((item) => item !== path)
 }
 
-function isImported(path) {
-  return importedScan.value.has(path)
+function scanItems(skill) {
+  return Array.isArray(skill?.items) && skill.items.length ? skill.items : [skill]
+}
+
+function isImported(skill) {
+  if (!skill) return false
+  const items = typeof skill === 'string' ? [{ path: skill }] : scanItems(skill)
+  return items.every((item) => importedScan.value.has(item.path))
 }
 
 function openImport() {
@@ -202,26 +211,30 @@ async function importSelected() {
   }
   await run(async () => {
     const reserved = new Set(data.value.skills.map((skill) => skill.folder.toLowerCase()))
-    const imported = []
+    let importedCount = 0
     const failed = []
     for (const [index, candidate] of selectedScanItems.value.entries()) {
-      try {
-        const folder = folderName(candidate, reserved, index)
-        const result = await api.skillsInstall({ type: 'local', path: candidate.path }, folder)
-        const skill = result.skills.find((item) => item.folder.toLowerCase() === folder.toLowerCase())
-        if (!skill) throw new Error('导入后没有找到 Skill 记录')
-        await api.skillsSync(skill.id, selectedTargets.value)
-        imported.push(candidate.path)
-      } catch (e) {
-        failed.push(`${candidate.name || candidate.path}: ${e.message || e}`)
+      for (const [memberIndex, member] of scanItems(candidate).entries()) {
+        if (isImported(member)) continue
+        try {
+          const folder = folderName(member, reserved, index + memberIndex)
+          const result = await api.skillsInstall({ type: 'local', path: member.path }, folder)
+          const skill = result.skills.find((item) => item.folder.toLowerCase() === folder.toLowerCase())
+          if (!skill) throw new Error('导入后没有找到 Skill 记录')
+          await api.skillsSync(skill.id, selectedTargets.value)
+          importedScan.value.add(member.path)
+          importedCount++
+        } catch (e) {
+          failed.push(`${member.name || member.path}: ${e.message || e}`)
+        }
       }
+      if (isImported(candidate)) importedScan.value.add(candidate.path)
     }
     data.value = await api.skillsList()
-    selectedScan.value = selectedScan.value.filter((path) => !imported.includes(path))
-    importedScan.value = new Set([...importedScan.value, ...imported])
+    selectedScan.value = selectedScan.value.filter((path) => !isImported(found.value.find((item) => item.path === path)))
     importVisible.value = false
-    if (failed.length) error.value = `已导入 ${imported.length} 个，失败 ${failed.length} 个：${failed.join('；')}`
-    else ElMessage.success(`已将 ${imported.length} 个 Skill 导入到 ${selectedTargets.value.length} 个 Harness`)
+    if (failed.length) error.value = `已导入 ${importedCount} 个，失败 ${failed.length} 个：${failed.join('；')}`
+    else ElMessage.success(`已将 ${importedCount} 个 Skill 导入到 ${selectedTargets.value.length} 个 Harness`)
   })
 }
 
@@ -388,18 +401,19 @@ onUnmounted(() => offHarnessUpdated?.())
         <el-tab-pane label="扫描本机" name="scan">
           <section class="manage-section scan-section">
             <div class="section-head">
-              <div><h2>本机扫描结果</h2><p class="muted">只显示包含 SKILL.md 的目录；结果会保留到下次手动刷新或重新扫描，原目录不会被修改。</p></div>
-              <div v-if="found.length" class="scan-tools"><el-input v-model="scanQuery" :prefix-icon="Search" placeholder="搜索名称、说明、工具或路径" clearable aria-label="搜索扫描结果" /><span class="scan-count" role="status">已选 {{ selectedScanItems.length }} · {{ scanResults.length }} / {{ found.length }}</span></div>
+              <div><h2>本机扫描结果</h2><p class="muted">同一 Skill 只保留一张卡片；主 Skill 与子 Skill 会合并显示。结果会保留到下次手动刷新或重新扫描，原目录不会被修改。</p></div>
+              <div v-if="found.length" class="scan-tools"><el-input v-model="scanQuery" :prefix-icon="Search" placeholder="搜索名称、说明、子 Skill 或路径" clearable aria-label="搜索扫描结果" /><span class="scan-count" role="status">已选 {{ selectedScanItems.length }} · {{ scanResults.length }} / {{ found.length }}</span></div>
             </div>
             <div v-if="scanErrors.length" class="scan-errors"><el-alert v-for="item in scanErrors" :key="item" type="warning" :title="item" :closable="false" /></div>
             <div v-if="!found.length" class="manage-empty"><el-icon :size="24"><Collection /></el-icon><strong>还没有扫描结果</strong><span>点击右上角「扫描本机」，把散落在各个工具里的 Skill 集中到这里。</span><el-button type="primary" :disabled="busy" @click="scan">扫描本机</el-button></div>
             <div v-else-if="!scanResults.length" class="manage-empty"><strong>没有匹配的 Skill</strong><span>试试其他关键词。</span><el-button @click="scanQuery = ''">清空搜索</el-button></div>
             <div v-else class="scan-grid">
-              <article v-for="skill in scanResults" :key="skill.path" class="scan-item" :class="{ selected: selectedScan.includes(skill.path), imported: isImported(skill.path) }">
-                <div class="scan-item-top"><el-checkbox :model-value="selectedScan.includes(skill.path)" :disabled="isImported(skill.path)" :aria-label="`选择 ${skill.name}`" @click.stop @change="setScanSelected(skill.path, $event)" /><el-tag size="small" effect="plain">{{ skill.tool }}</el-tag><el-tag v-if="isImported(skill.path)" size="small" type="success" effect="plain">已导入</el-tag></div>
+              <article v-for="skill in scanResults" :key="skill.path" class="scan-item" :class="{ selected: selectedScan.includes(skill.path), imported: isImported(skill) }">
+                <div class="scan-item-top"><el-tag v-if="isImported(skill)" size="small" type="success" effect="plain">已导入</el-tag><el-checkbox :model-value="selectedScan.includes(skill.path)" :disabled="isImported(skill)" :aria-label="`选择 ${skill.name}`" @click.stop @change="setScanSelected(skill.path, $event)" /></div>
                 <h3 :title="skill.name">{{ skill.name }}</h3>
                 <p class="scan-description">{{ skill.description || '暂无说明' }}</p>
-                <div class="scan-item-foot"><div class="path" :title="skill.path">{{ skill.path }}</div><span class="scan-state">{{ isImported(skill.path) ? '已纳入管理库' : '待导入' }}</span></div>
+                <div v-if="skill.children?.length" class="scan-children" :title="skill.children.map((child) => child.name).join('、')"><span>包含 {{ skill.children.length }} 个子 Skill</span><small>{{ skill.children.map((child) => child.name).join('、') }}</small></div>
+                <div class="scan-item-foot"><div class="path" :title="skill.path">{{ skill.path }}</div><span class="scan-state">{{ isImported(skill) ? '已纳入管理库' : '待导入' }}</span></div>
               </article>
             </div>
           </section>
@@ -522,13 +536,17 @@ onUnmounted(() => offHarnessUpdated?.())
 .manage-empty strong { color: var(--oh-text); }
 .manage-empty.compact { min-height: 90px; }
 .scan-grid, .library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 12px; }
-.scan-item { height: 218px; min-width: 0; padding: 15px; border: 1px solid var(--oh-border); border-radius: 12px; display: flex; flex-direction: column; background: var(--oh-bg-card); transition: border-color var(--oh-dur) var(--oh-ease), background var(--oh-dur) var(--oh-ease); }
+.scan-item { position: relative; height: 180px; min-width: 0; padding: 10px 15px 0; border: 1px solid var(--oh-border); border-radius: 12px; display: flex; flex-direction: column; background: var(--oh-bg-card); transition: border-color var(--oh-dur) var(--oh-ease), background var(--oh-dur) var(--oh-ease); }
 .scan-item.selected { border-color: var(--oh-primary); background: var(--oh-primary-soft); }
 .scan-item.imported { opacity: .7; }
-.scan-item-top { min-height: 24px; }
-.scan-item-top .el-tag:first-of-type { margin-left: auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.scan-item h3 { margin: 14px 0 8px; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-item-top { position: absolute; top: 10px; right: 15px; min-height: 24px; gap: 8px; }
+.scan-item-top .el-tag:first-of-type { margin-left: 0; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-item-top .el-checkbox { margin: 0; }
+.scan-item h3 { min-width: 0; margin: 0 82px 8px 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scan-description { height: 42px; margin: 0 0 12px; color: var(--oh-text-dim); font-size: 12px; line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.scan-children { height: 30px; min-width: 0; margin: -2px 0 10px; color: var(--oh-primary); font-size: 11px; line-height: 1.4; overflow: hidden; }
+.scan-children span, .scan-children small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-children small { color: var(--oh-text-dim); font-size: 11px; }
 .scan-item-foot { min-width: 0; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--oh-border); }
 .scan-item-foot .path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .scan-state { flex-shrink: 0; color: var(--oh-text-dim); font-size: 11px; }
@@ -581,6 +599,6 @@ onUnmounted(() => offHarnessUpdated?.())
   .page-head { align-items: flex-start; }
   .actions { width: 100%; justify-content: flex-start; }
   .harness-skill-card { height: 260px; }
-  .scan-item { height: 208px; }
+  .scan-item { height: 180px; }
 }
 </style>

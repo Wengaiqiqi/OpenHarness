@@ -51,7 +51,19 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(existingCodex, 'SKILL.md'), '---\nname: Existing Codex Skill\n---\n# Existing')
   fs.mkdirSync(path.join(longToolPath, 'long-label'), { recursive: true })
   fs.writeFileSync(path.join(longToolPath, 'long-label', 'SKILL.md'), '---\nname: Long label fixture\n---\n# Example')
-  ipcMain.handle('provider:getAll', () => [{ id: 'test', name: 'Test', models: ['fake'], apiKey: 'fake', baseUrl: 'https://example.test' }])
+  const sharedClaude = path.join(dir, 'home', '.claude', 'skills', 'shared-claude')
+  const sharedDsh = path.join(dir, 'home', '.dsh', 'skills', 'shared-dsh')
+  for (const folder of [sharedClaude, sharedDsh]) {
+    fs.mkdirSync(folder, { recursive: true })
+    fs.writeFileSync(path.join(folder, 'SKILL.md'), '---\nname: Shared Skill\n---\n# Shared')
+  }
+  const suite = path.join(dir, 'home', '.claude', 'skills', 'suite')
+  const suiteChild = path.join(dir, 'home', '.claude', 'skills', 'suite-child')
+  fs.mkdirSync(suite, { recursive: true })
+  fs.mkdirSync(suiteChild, { recursive: true })
+  fs.writeFileSync(path.join(suite, 'SKILL.md'), '---\nname: Suite\n---\n# Parent')
+  fs.writeFileSync(path.join(suiteChild, 'SKILL.md'), '---\nname: Suite-child\n---\n# Child')
+  ipcMain.handle('provider:getAll', () => [{ id: 'test', name: 'Test', models: ['fake', 'model-with-a-long-name-for-preview', 'third-model', 'fourth-model'], apiKey: 'fake', baseUrl: 'https://example.test' }])
   const source = fs.readFileSync(path.join(root, 'src/main/chat.js'), 'utf8')
   const { createChatService } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
   const chat = createChatService()
@@ -95,6 +107,17 @@ app.whenReady().then(async () => {
     button.click()
   })()`)
   await waitFor("!!document.querySelector('.skills-page')")
+  await win.webContents.executeJavaScript("location.hash = '#/providers'")
+  await waitFor("!!document.querySelector('.provider-card')")
+  assert.equal(await win.webContents.executeJavaScript("getComputedStyle(document.querySelector('.p-models-preview')).whiteSpace"), 'nowrap')
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('.p-models-detail')?.textContent.trim()"), '查看详细')
+  await clickText('查看详细')
+  await waitFor("document.querySelectorAll('.provider-models-dialog .model-detail-row').length === 4")
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('.provider-models-dialog .models-dialog-summary')?.textContent.includes('4 个模型')"), true)
+  await clickText('关闭')
+  await waitFor("!document.querySelector('.provider-models-dialog .model-detail-row')")
+  await win.webContents.executeJavaScript("location.hash = '#/skills'")
+  await waitFor("!!document.querySelector('.skills-page')")
   assert.equal(await win.webContents.executeJavaScript("!![...document.querySelectorAll('button')].find(b => b.textContent.trim() === '导入 Skill' && b.getClientRects().length)"), false)
   await waitFor("document.querySelectorAll('.harness-skill-card').length === 3")
   assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.harness-skill-card .harness-icon').length"), 3)
@@ -119,8 +142,10 @@ app.whenReady().then(async () => {
   })()`)
   await waitFor("document.querySelector('.scan-section')?.getClientRects().length > 0")
   await clickText('扫描本机')
-  await waitFor("document.querySelectorAll('.scan-item').length === 26")
-  assert.ok(await win.webContents.executeJavaScript("localStorage.getItem('openharness.skills.scan.v1')"))
+  await waitFor("document.querySelectorAll('.scan-item').length === 28")
+  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.scan-item .scan-item-top .el-tag').length"), 0)
+  assert.equal(await win.webContents.executeJavaScript("!![...document.querySelectorAll('.scan-item')].find((item) => item.querySelector('h3')?.textContent.trim() === 'Suite' && item.textContent.includes('包含 1 个子 Skill'))"), true)
+  assert.ok(await win.webContents.executeJavaScript("localStorage.getItem('openharness.skills.scan.v3')"))
   for (const [width, height, zoom] of [[1280, 820, 1], [960, 600, 1], [1600, 900, 1], [960, 600, 1.25]]) {
     win.setContentSize(width, height)
     win.webContents.setZoomFactor(zoom)
@@ -131,12 +156,12 @@ app.whenReady().then(async () => {
       const width = rects[0]?.width || 0, height = rects[0]?.height || 0
       return { uniform: rects.every((r) => Math.abs(r.width - width) < 1 && Math.abs(r.height - height) < 1),
         bounded: cards.every((item) => { const r = item.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 }),
-        fixedHeight: height >= 200 && height <= 230, noHorizontalOverflow: grid.scrollWidth <= grid.clientWidth + 1,
+        fixedHeight: height >= 176 && height <= 204, noHorizontalOverflow: grid.scrollWidth <= grid.clientWidth + 1,
         noPageOverflow: document.querySelector('.skills-page').scrollWidth <= document.querySelector('.skills-page').clientWidth + 1 }
     })()`)
     assert.ok(fit.uniform && fit.bounded && fit.fixedHeight && fit.noHorizontalOverflow && fit.noPageOverflow, JSON.stringify(fit))
   }
-  for (const [query, count] of [['  LOCAL SKILL 12  ', 1], ['中文检索', 1], ['Claude Code', 24], ['scan-23', 1], ['no-match-example', 0], ['', 26]]) {
+  for (const [query, count] of [['  LOCAL SKILL 12  ', 1], ['中文检索', 1], ['Claude Code', 0], ['scan-23', 1], ['no-match-example', 0], ['', 28]]) {
     await win.webContents.executeJavaScript(`(() => {
       const input = document.querySelector('input[aria-label="搜索扫描结果"]')
       input.value = ${JSON.stringify(query)}; input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -148,20 +173,22 @@ app.whenReady().then(async () => {
   await win.webContents.executeJavaScript("location.hash = '#/skills'")
   await waitFor("!!document.querySelector('.skills-page')")
   await clickText('Skill 管理')
-  await waitFor("document.querySelector('.skills-page.is-manage') && document.querySelectorAll('.scan-item').length === 26")
+  await waitFor("document.querySelector('.skills-page.is-manage') && document.querySelectorAll('.scan-item').length === 28")
   const refreshOnly = path.join(longToolPath, 'refresh-only')
   fs.mkdirSync(refreshOnly, { recursive: true })
   fs.writeFileSync(path.join(refreshOnly, 'SKILL.md'), '---\nname: Refresh only skill\n---\n# Example')
-  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.scan-item').length"), 26)
+  assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.scan-item').length"), 28)
   await clickText('刷新')
-  await waitFor("document.querySelectorAll('.scan-item').length === 27")
+  await waitFor("document.querySelectorAll('.scan-item').length === 29")
   win.webContents.setZoomFactor(1)
   win.setContentSize(1280, 820)
   await new Promise(resolve => setTimeout(resolve, 150))
   fs.writeFileSync(path.join(dir, 'skills-scan.png'), (await win.webContents.capturePage()).toPNG())
   console.log('Skills management screenshot:', path.join(dir, 'skills-scan.png'))
   await win.webContents.executeJavaScript(`(() => {
-    [...document.querySelectorAll('.scan-item input[type="checkbox"]')].slice(0, 2).forEach((input) => input.click())
+    const cards = [...document.querySelectorAll('.scan-item')]
+    cards[0]?.querySelector('input[type="checkbox"]')?.click()
+    cards.find((item) => item.querySelector('h3')?.textContent.trim() === 'Suite')?.querySelector('input[type="checkbox"]')?.click()
   })()`)
   await waitFor("document.querySelector('.scan-count')?.textContent.includes('已选 2')")
   await clickText('导入 Skill')
@@ -199,14 +226,14 @@ app.whenReady().then(async () => {
   })()`)
   await waitFor("document.querySelector('.harness-target-dialog .target-card[data-target-id=\"codex\"]')?.classList.contains('selected')")
   await clickText('导入到选中 Harness')
-  await waitFor("document.querySelectorAll('.library-card').length === 2")
+  await waitFor("document.querySelectorAll('.library-card').length === 3")
   const imported = skillService.list().skills
-  assert.equal(imported.length, 2)
+  assert.equal(imported.length, 3)
   assert.ok(imported.every((skill) => skill.targets.some((item) => item.id === 'codex' && item.state === 'on')))
   await win.webContents.executeJavaScript("document.querySelector('.manage-back').click()")
-  await waitFor("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]')?.textContent.includes('3')")
+  await waitFor("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]')?.textContent.includes('4')")
   await win.webContents.executeJavaScript("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]').click()")
-  await waitFor("document.querySelector('.harness-detail') && document.querySelectorAll('.detail-skill').length === 3")
+  await waitFor("document.querySelector('.harness-detail') && document.querySelectorAll('.detail-skill').length === 4")
   const terminalOutput = await new Promise((resolve, reject) => {
     let output = ''
     terminal = pty.spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'echo NATIVE_PTY_OK'], { cols: 80, rows: 24, cwd: dir, env: process.env })

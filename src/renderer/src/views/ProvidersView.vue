@@ -7,6 +7,8 @@ import { Plus, Delete, Edit } from '@element-plus/icons-vue'
 const providers = ref([])
 const visible = ref(false)
 const editing = ref(null)
+const modelsVisible = ref(false)
+const modelsProvider = ref(null)
 const form = ref({ name: '', type: 'openai-compatible', baseUrl: '', apiKey: '', models: [] })
 
 const typeOptions = [
@@ -41,6 +43,11 @@ function openEdit(p) {
   form.value = JSON.parse(JSON.stringify(p))
   fetchedModels.value = []
   visible.value = true
+}
+
+function openModels(p) {
+  modelsProvider.value = p
+  modelsVisible.value = true
 }
 
 async function save() {
@@ -138,7 +145,11 @@ onMounted(load)
         </div>
         <div class="p-row">Base URL：{{ p.baseUrl }}</div>
         <div class="p-row">Key：{{ p.apiKey ? p.apiKey.slice(0, 8) + '••••••' : '未设置' }}</div>
-        <div v-if="p.models?.length" class="p-row">模型：{{ p.models.join('、') }}</div>
+        <div class="p-row p-models-row">
+          <span class="p-models-label">模型：</span>
+          <span class="p-models-preview" :title="p.models?.length ? p.models.join('、') : '未配置'">{{ p.models?.length ? p.models.join('、') : '未配置' }}</span>
+          <el-button v-if="p.models?.length" class="p-models-detail" text type="primary" size="small" :aria-label="`查看 ${p.name} 的完整模型列表`" @click="openModels(p)">查看详细</el-button>
+        </div>
         <div class="p-actions">
           <el-button size="small" :icon="Edit" @click="openEdit(p)">编辑</el-button>
           <el-button size="small" type="danger" plain :icon="Delete" @click="remove(p)">删除</el-button>
@@ -182,6 +193,35 @@ onMounted(load)
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
         <el-button type="primary" @click="save">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="modelsVisible"
+      class="provider-models-dialog"
+      :title="`${modelsProvider?.name || '模型服务'} · 模型列表`"
+      width="min(620px, calc(100vw - 32px))"
+      align-center
+      :close-on-click-modal="false"
+      @closed="modelsProvider = null"
+    >
+      <template v-if="modelsProvider">
+        <div class="models-dialog-summary">
+          <div class="p-badge">{{ (modelsProvider.name || '模型').slice(0, 2).toUpperCase() }}</div>
+          <div class="models-dialog-meta">
+            <strong>{{ modelsProvider.models?.length || 0 }} 个模型</strong>
+            <span>{{ typeOptions.find((t) => t.value === modelsProvider.type)?.label || modelsProvider.type }}</span>
+          </div>
+        </div>
+        <div class="models-dialog-list" role="list" aria-label="完整模型列表">
+          <div v-for="(model, index) in modelsProvider.models || []" :key="model" class="model-detail-row" role="listitem">
+            <span class="model-index">{{ index + 1 }}</span>
+            <span class="model-name">{{ model }}</span>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="modelsVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -248,6 +288,30 @@ onMounted(load)
   word-break: break-all;
 }
 
+.p-models-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.p-models-label,
+.p-models-detail {
+  flex-shrink: 0;
+}
+
+.p-models-preview {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.p-models-detail {
+  padding: 0 3px;
+}
+
 .p-actions {
   display: flex;
   justify-content: flex-end;
@@ -274,5 +338,70 @@ onMounted(load)
 .models-count {
   font-size: 12px;
   color: var(--oh-text-dim);
+}
+
+.models-dialog-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--oh-border);
+}
+
+.models-dialog-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.models-dialog-meta strong {
+  font-size: 16px;
+}
+
+.models-dialog-meta span {
+  color: var(--oh-text-dim);
+  font-size: 12px;
+}
+
+.models-dialog-list {
+  display: grid;
+  gap: 6px;
+  max-height: min(52vh, 420px);
+  margin-top: 12px;
+  padding-right: 2px;
+  overflow: auto;
+}
+
+.model-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--oh-border);
+  border-radius: 9px;
+  background: var(--oh-bg-card);
+}
+
+.model-index {
+  flex: 0 0 24px;
+  color: var(--oh-text-dim);
+  font: 11px/1.4 Consolas, 'JetBrains Mono', monospace;
+  text-align: right;
+}
+
+.model-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--oh-text);
+}
+
+:deep(.provider-models-dialog.el-dialog) {
+  max-width: calc(100vw - 32px);
+}
+
+:deep(.provider-models-dialog .el-dialog__body) {
+  padding-top: 4px;
 }
 </style>

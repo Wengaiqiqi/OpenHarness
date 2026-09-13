@@ -105,6 +105,58 @@ test('invalid update preserves old content and scan does not rediscover managed 
   assert.equal(service.list().skills[0].targets.find(t => t.id === 'codex').state, 'on')
 })
 
+test('scan deduplicates copies across harnesses and groups child skills with their parent', async t => {
+  const { service, options } = setup(t)
+  const claude = path.join(options.home, '.claude', 'skills')
+  const agents = path.join(options.home, '.agents', 'skills')
+  const dsh = path.join(options.home, '.dsh', 'skills')
+  const writeSkill = (folder, name) => {
+    fs.mkdirSync(folder, { recursive: true })
+    fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: ${name}\n---\n# ${name}`)
+  }
+  writeSkill(path.join(claude, 'example-copy'), 'Example')
+  writeSkill(path.join(agents, 'ponytail'), 'Ponytail')
+  writeSkill(path.join(agents, 'ponytail-audit'), 'Ponytail-audit')
+  writeSkill(path.join(dsh, 'ponytail-copy'), 'Ponytail')
+  writeSkill(path.join(dsh, 'ponytail-audit-copy'), 'Ponytail-audit')
+
+  const result = service.scan()
+  const example = result.found.find((skill) => skill.name === 'Example')
+  const ponytail = result.found.find((skill) => skill.name === 'Ponytail')
+  assert.equal(result.errors.length, 0)
+  assert.equal(result.found.filter((skill) => skill.name.toLowerCase() === 'example').length, 1)
+  assert.deepEqual(ponytail.children.map((skill) => skill.name), ['Ponytail-audit'])
+  assert.equal(ponytail.items.length, 2)
+  assert.equal(result.found.some((skill) => skill.name === 'Ponytail-audit'), false)
+  assert.equal(example.items.length, 1)
+})
+
+test('system skills are excluded from scan results and Harness counts', async t => {
+  const { service, options } = setup(t)
+  const claude = path.join(options.home, '.claude', 'skills')
+  const opencode = path.join(options.home, '.config', 'opencode', 'skills')
+  const writeSkill = (folder, frontmatter, name = path.basename(folder)) => {
+    fs.mkdirSync(folder, { recursive: true })
+    fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: ${name}\n${frontmatter}---\n# ${name}`)
+  }
+  writeSkill(path.join(claude, 'system'), '', 'System folder')
+  writeSkill(path.join(claude, 'flagged'), 'system: true\n', 'Flagged system')
+  writeSkill(path.join(claude, 'catalog'), 'od:\n  mode: prototype\n', 'Catalog system')
+  writeSkill(path.join(claude, 'user-skill'), '', 'User Skill')
+  fs.mkdirSync(opencode, { recursive: true })
+  fs.writeFileSync(path.join(opencode, '.arkcli-managed-skills.json'), JSON.stringify({ skills: { 'arkcli-agent': 'hash' } }))
+  writeSkill(path.join(opencode, 'arkcli-agent'), '', 'ARK system')
+  writeSkill(path.join(opencode, 'user-opencode'), '', 'OpenCode user')
+
+  const result = service.scan()
+  assert.equal(result.errors.length, 0)
+  assert.deepEqual(result.found.map((skill) => skill.name).sort(), ['OpenCode user', 'User Skill'])
+  const claudeTarget = service.list().targets.find((target) => target.id === 'claude-code')
+  const opencodeTarget = service.list().targets.find((target) => target.id === 'opencode')
+  assert.deepEqual(claudeTarget.skills.map((skill) => skill.name), ['User Skill'])
+  assert.deepEqual(opencodeTarget.skills.map((skill) => skill.name), ['OpenCode user'])
+})
+
 test('boundary validation rejects traversal, duplicate names, embedded links and unsafe Git URLs', async t => {
   const { service, source, dir } = setup(t)
   for (const name of ['../escape', 'a/b', 'CON', 'trailing.']) await assert.rejects(service.install({ type: 'local', path: source }, name))
