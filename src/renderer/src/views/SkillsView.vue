@@ -407,18 +407,18 @@ onUnmounted(() => offHarnessUpdated?.())
       </el-tabs>
     </template>
 
-    <el-dialog v-model="importVisible" title="选择目标 Harness" width="min(680px, 92vw)" :close-on-click-modal="false">
+    <el-dialog v-model="importVisible" class="harness-target-dialog" title="选择目标 Harness" width="min(960px, 92vw)" :close-on-click-modal="false">
       <p class="muted">已选择 {{ selectedScanItems.length }} 个 Skill。勾选目标后导入，已有同名目录不会被覆盖。</p>
       <el-checkbox-group v-model="selectedTargets" aria-label="选择目标 Harness">
-        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id"><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></el-checkbox><div class="path">{{ card.path }}</div></div>
+        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id"><span class="target-label"><img v-if="card.icon" :src="card.icon" class="target-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></span></el-checkbox><div class="path">{{ card.path }}</div></div>
       </el-checkbox-group>
       <template #footer><el-button :disabled="busy" @click="importVisible = false">取消</el-button><el-button type="primary" :loading="busy" aria-label="导入到选中 Harness" @click="importSelected">导入到选中 Harness</el-button></template>
     </el-dialog>
 
-    <el-dialog :model-value="!!syncing" title="同步工具" width="min(680px, 92vw)" :close-on-click-modal="false" @close="syncing = null">
+    <el-dialog :model-value="!!syncing" class="harness-target-dialog" title="同步工具" width="min(960px, 92vw)" :close-on-click-modal="false" @close="syncing = null">
       <p class="muted">选择「{{ syncing?.name }}」要同步到的 Harness；取消勾选会移除由本应用创建的同步链接。</p>
       <el-checkbox-group v-model="selectedSyncTargets" aria-label="选择同步 Harness">
-        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'"><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></el-checkbox><div class="path">{{ card.path }}</div></div>
+        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'"><span class="target-label"><img v-if="card.icon" :src="card.icon" class="target-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></span></el-checkbox><div class="path">{{ card.path }}</div></div>
       </el-checkbox-group>
       <template #footer><el-button :disabled="busy" @click="syncing = null">取消</el-button><el-button type="primary" :loading="busy" @click="saveSkillSync">保存同步状态</el-button></template>
     </el-dialog>
@@ -517,8 +517,14 @@ onUnmounted(() => offHarnessUpdated?.())
 .card-actions .el-button + .el-button { margin-left: 0; }
 .import-target-row, .target-row { padding: 10px 4px; border-bottom: 1px solid var(--oh-border); }
 .import-target-row:last-child, .target-row:last-child { border-bottom: none; }
-.import-target-row .el-tag { margin-left: 8px; }
-.import-target-row .path { margin: 3px 0 0 24px; }
+.import-target-row .el-checkbox { display: flex; width: 100%; }
+.import-target-row .el-checkbox__label { min-width: 0; flex: 1; }
+.target-label { display: flex; align-items: center; min-width: 0; gap: 8px; }
+.target-label strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target-label .el-tag { margin-left: auto; flex-shrink: 0; }
+.target-icon, .target-avatar { width: 30px; height: 30px; border-radius: 8px; object-fit: contain; flex-shrink: 0; }
+.target-avatar { display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
+.import-target-row .path { margin: 4px 0 0 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .harness-detail { min-height: 220px; }
 .detail-header { padding: 4px 0 16px; border-bottom: 1px solid var(--oh-border); }
 .detail-header strong { font-size: 18px; }
@@ -528,6 +534,9 @@ onUnmounted(() => offHarnessUpdated?.())
 .detail-skill span:nth-child(2) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-skill:hover { border-color: var(--oh-primary); }
 .skill-content { max-height: 55vh; margin-top: 14px; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--oh-border); border-radius: 8px; font: 13px/1.7 Consolas, 'JetBrains Mono', monospace; }
+:deep(.harness-target-dialog.el-dialog) { width: min(960px, calc(100vw - 32px)) !important; max-height: calc(100vh - 48px); margin: 24px auto !important; aspect-ratio: 16 / 9; display: flex; flex-direction: column; overflow: hidden; }
+:deep(.harness-target-dialog .el-dialog__header), :deep(.harness-target-dialog .el-dialog__footer) { flex-shrink: 0; }
+:deep(.harness-target-dialog .el-dialog__body) { min-height: 0; flex: 1; overflow: auto; }
 @media (max-width: 900px) {
   .section-head { align-items: flex-start; flex-direction: column; }
   .scan-tools, .library-tools { width: 100%; justify-content: flex-start; }

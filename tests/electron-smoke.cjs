@@ -166,6 +166,14 @@ app.whenReady().then(async () => {
   await waitFor("document.querySelector('.scan-count')?.textContent.includes('已选 2')")
   await clickText('导入 Skill')
   await waitFor("!!document.querySelector('[aria-label=\"选择目标 Harness\"]')")
+  await waitFor("!!document.querySelector('.harness-target-dialog .target-icon')")
+  const targetDialog = await win.webContents.executeJavaScript(`(() => {
+    const dialog = document.querySelector('.harness-target-dialog')
+    const rect = dialog?.getBoundingClientRect()
+    return { width: rect?.width || 0, height: rect?.height || 0, icons: document.querySelectorAll('.harness-target-dialog .target-icon').length, viewportWidth: innerWidth, viewportHeight: innerHeight }
+  })()`)
+  assert.ok(targetDialog.icons >= 4)
+  assert.ok(Math.abs(targetDialog.width / targetDialog.height - 16 / 9) < 0.08 && targetDialog.width <= targetDialog.viewportWidth && targetDialog.height <= targetDialog.viewportHeight, JSON.stringify(targetDialog))
   await win.webContents.executeJavaScript(`(() => {
     const label = [...document.querySelectorAll('.import-target-row .el-checkbox')].find(e => e.textContent.includes('Codex'))
     if (!label) throw new Error('Codex target missing')
