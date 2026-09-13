@@ -176,9 +176,12 @@ app.whenReady().then(async () => {
     const foot = codex?.querySelector('.target-card-foot')?.getBoundingClientRect()
     const icon = codex?.querySelector('.target-card-icon')?.getBoundingClientRect()
     const dsh = document.querySelector('.harness-target-dialog .target-card[data-target-id="dsh"]')
-    const status = dsh?.querySelector('.target-card-status')?.getBoundingClientRect()
-    const dshIcon = dsh?.querySelector('.target-card-icon')?.getBoundingClientRect()
-    return { left: rect?.left || 0, top: rect?.top || 0, width: rect?.width || 0, height: rect?.height || 0, icons: document.querySelectorAll('.harness-target-dialog .target-card-icon').length, cards: document.querySelectorAll('.harness-target-dialog .target-card').length, hasInstalledLabel: document.querySelector('.harness-target-dialog')?.textContent.includes('已安装'), checkboxRight: checkbox?.right || 0, cardRight: card?.right || 0, cardHeight: card?.height || 0, footTop: foot?.top || 0, iconTop: icon?.top || 0, cardTop: card?.top || 0, statusLeft: status?.left || 0, statusIconRight: dshIcon?.right || 0, viewportWidth: innerWidth, viewportHeight: innerHeight }
+    const statusEl = dsh?.querySelector('.target-card-status')
+    const iconEl = dsh?.querySelector('.target-card-icon')
+    const status = statusEl?.getBoundingClientRect()
+    const dshIcon = iconEl?.getBoundingClientRect()
+    const statusGap = statusEl && iconEl ? statusEl.offsetLeft - iconEl.offsetLeft - iconEl.offsetWidth : 0
+    return { left: rect?.left || 0, top: rect?.top || 0, width: rect?.width || 0, height: rect?.height || 0, icons: document.querySelectorAll('.harness-target-dialog .target-card-icon').length, cards: document.querySelectorAll('.harness-target-dialog .target-card').length, hasInstalledLabel: document.querySelector('.harness-target-dialog')?.textContent.includes('已安装'), checkboxRight: checkbox?.right || 0, cardRight: card?.right || 0, cardHeight: card?.height || 0, footTop: foot?.top || 0, iconTop: icon?.top || 0, cardTop: card?.top || 0, statusLeft: status?.left || 0, statusIconRight: dshIcon?.right || 0, statusGap, viewportWidth: innerWidth, viewportHeight: innerHeight }
   })()`)
   assert.ok(targetDialog.icons >= 4)
   assert.ok(targetDialog.cards >= 4)
@@ -186,7 +189,7 @@ app.whenReady().then(async () => {
   assert.ok(targetDialog.checkboxRight > targetDialog.cardRight - 80, JSON.stringify(targetDialog))
   assert.ok(targetDialog.cardHeight <= 154 && targetDialog.footTop - targetDialog.cardTop < 130, JSON.stringify(targetDialog))
   assert.ok(targetDialog.iconTop - targetDialog.cardTop <= 20, JSON.stringify(targetDialog))
-  assert.ok(!targetDialog.statusLeft || targetDialog.statusLeft >= targetDialog.statusIconRight, JSON.stringify(targetDialog))
+  assert.ok(!targetDialog.statusLeft || targetDialog.statusGap >= 7 && targetDialog.statusGap <= 11, JSON.stringify(targetDialog))
   assert.ok(Math.abs(targetDialog.width / targetDialog.height - 16 / 9) < 0.08 && targetDialog.width <= targetDialog.viewportWidth && targetDialog.height <= targetDialog.viewportHeight, JSON.stringify(targetDialog))
   assert.ok(Math.abs(targetDialog.left + targetDialog.width / 2 - targetDialog.viewportWidth / 2) < 1 && Math.abs(targetDialog.top + targetDialog.height / 2 - targetDialog.viewportHeight / 2) < 1, JSON.stringify(targetDialog))
   await win.webContents.executeJavaScript(`(() => {
