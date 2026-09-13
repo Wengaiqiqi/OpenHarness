@@ -169,6 +169,21 @@ function openImport() {
   importVisible.value = true
 }
 
+function toggleTarget(list, id) {
+  const index = list.indexOf(id)
+  if (index >= 0) list.splice(index, 1)
+  else list.push(id)
+}
+
+function toggleImportTarget(id) {
+  toggleTarget(selectedTargets.value, id)
+}
+
+function toggleSyncTarget(id) {
+  if (syncing.value?.targets.find((item) => item.id === id)?.state === 'conflict') return
+  toggleTarget(selectedSyncTargets.value, id)
+}
+
 function folderName(candidate, reserved, index) {
   const sourceName = candidate.path.split(/[\\/]/).pop() || `skill-${index + 1}`
   const base = sourceName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^[.-]+|[.-]+$/g, '').slice(0, 80) || `skill-${index + 1}`
@@ -407,18 +422,28 @@ onUnmounted(() => offHarnessUpdated?.())
       </el-tabs>
     </template>
 
-    <el-dialog v-model="importVisible" class="harness-target-dialog" title="选择目标 Harness" width="min(960px, 92vw)" :close-on-click-modal="false">
+    <el-dialog v-model="importVisible" class="harness-target-dialog" title="选择目标 Harness" width="min(960px, 92vw)" align-center transition="none" :close-on-click-modal="false">
       <p class="muted">已选择 {{ selectedScanItems.length }} 个 Skill。勾选目标后导入，已有同名目录不会被覆盖。</p>
-      <el-checkbox-group v-model="selectedTargets" aria-label="选择目标 Harness">
-        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id"><span class="target-label"><img v-if="card.icon" :src="card.icon" class="target-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></span></el-checkbox><div class="path">{{ card.path }}</div></div>
+      <el-checkbox-group v-model="selectedTargets" class="target-card-grid" aria-label="选择目标 Harness">
+        <article v-for="card in syncTargets" :key="card.id" class="target-card" :data-target-id="card.id" :class="{ selected: selectedTargets.includes(card.id) }" role="button" tabindex="0" @click="toggleImportTarget(card.id)" @keydown.enter.prevent="toggleImportTarget(card.id)">
+          <div class="target-card-top"><el-checkbox :value="card.id" :aria-label="`选择 ${card.name}`" @click.stop /><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></div>
+          <div class="target-card-title"><img v-if="card.icon" :src="card.icon" class="target-card-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-card-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong :title="card.name">{{ card.name }}</strong></div>
+          <p class="target-card-desc">{{ card.desc || '读取此 Harness 配置的 Skill 目录。' }}</p>
+          <div class="target-card-foot"><span class="path" :title="card.path">{{ card.path }}</span></div>
+        </article>
       </el-checkbox-group>
       <template #footer><el-button :disabled="busy" @click="importVisible = false">取消</el-button><el-button type="primary" :loading="busy" aria-label="导入到选中 Harness" @click="importSelected">导入到选中 Harness</el-button></template>
     </el-dialog>
 
-    <el-dialog :model-value="!!syncing" class="harness-target-dialog" title="同步工具" width="min(960px, 92vw)" :close-on-click-modal="false" @close="syncing = null">
+    <el-dialog :model-value="!!syncing" class="harness-target-dialog" title="同步工具" width="min(960px, 92vw)" align-center transition="none" :close-on-click-modal="false" @close="syncing = null">
       <p class="muted">选择「{{ syncing?.name }}」要同步到的 Harness；取消勾选会移除由本应用创建的同步链接。</p>
-      <el-checkbox-group v-model="selectedSyncTargets" aria-label="选择同步 Harness">
-        <div v-for="card in syncTargets" :key="card.id" class="import-target-row"><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'"><span class="target-label"><img v-if="card.icon" :src="card.icon" class="target-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong>{{ card.name }}</strong><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></span></el-checkbox><div class="path">{{ card.path }}</div></div>
+      <el-checkbox-group v-model="selectedSyncTargets" class="target-card-grid" aria-label="选择同步 Harness">
+        <article v-for="card in syncTargets" :key="card.id" class="target-card" :data-target-id="card.id" :class="{ selected: selectedSyncTargets.includes(card.id), disabled: syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict' }" role="button" tabindex="0" @click="toggleSyncTarget(card.id)" @keydown.enter.prevent="toggleSyncTarget(card.id)">
+          <div class="target-card-top"><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'" :aria-label="`选择 ${card.name}`" @click.stop /><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></div>
+          <div class="target-card-title"><img v-if="card.icon" :src="card.icon" class="target-card-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-card-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong :title="card.name">{{ card.name }}</strong></div>
+          <p class="target-card-desc">{{ card.desc || '读取此 Harness 配置的 Skill 目录。' }}</p>
+          <div class="target-card-foot"><span class="path" :title="card.path">{{ card.path }}</span></div>
+        </article>
       </el-checkbox-group>
       <template #footer><el-button :disabled="busy" @click="syncing = null">取消</el-button><el-button type="primary" :loading="busy" @click="saveSkillSync">保存同步状态</el-button></template>
     </el-dialog>
@@ -515,16 +540,23 @@ onUnmounted(() => offHarnessUpdated?.())
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
 .card-actions { justify-content: flex-end; flex-wrap: wrap; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--oh-border); }
 .card-actions .el-button + .el-button { margin-left: 0; }
-.import-target-row, .target-row { padding: 10px 4px; border-bottom: 1px solid var(--oh-border); }
-.import-target-row:last-child, .target-row:last-child { border-bottom: none; }
-.import-target-row .el-checkbox { display: flex; width: 100%; }
-.import-target-row .el-checkbox__label { min-width: 0; flex: 1; }
-.target-label { display: flex; align-items: center; min-width: 0; gap: 8px; }
-.target-label strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.target-label .el-tag { margin-left: auto; flex-shrink: 0; }
-.target-icon, .target-avatar { width: 30px; height: 30px; border-radius: 8px; object-fit: contain; flex-shrink: 0; }
-.target-avatar { display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
-.import-target-row .path { margin: 4px 0 0 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.target-card { height: 176px; min-width: 0; padding: 15px; border: 1px solid var(--oh-border); border-radius: 13px; display: flex; flex-direction: column; background: var(--oh-bg-card); cursor: pointer; transition: border-color var(--oh-dur) var(--oh-ease), background var(--oh-dur) var(--oh-ease), transform var(--oh-dur) var(--oh-ease); }
+.target-card:hover, .target-card:focus-visible { border-color: var(--oh-primary); transform: translateY(-1px); outline: none; }
+.target-card.selected { border-color: var(--oh-primary); background: var(--oh-primary-soft); }
+.target-card.disabled { opacity: .6; cursor: not-allowed; }
+.target-card-top, .target-card-title, .target-card-foot { display: flex; align-items: center; min-width: 0; }
+.target-card-top { justify-content: space-between; }
+.target-card-top .el-checkbox { margin-right: 0; }
+.target-card-title { gap: 9px; margin: 13px 0 8px; }
+.target-card-title strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.target-card-icon, .target-card-avatar { width: 34px; height: 34px; border-radius: 9px; object-fit: contain; flex-shrink: 0; }
+.target-card-avatar { display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
+.target-card-desc { height: 40px; margin: 0; color: var(--oh-text-dim); font-size: 12px; line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.target-card-foot { min-width: 0; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--oh-border); }
+.target-card-foot .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.target-row { padding: 10px 4px; border-bottom: 1px solid var(--oh-border); }
+.target-row:last-child { border-bottom: none; }
 .harness-detail { min-height: 220px; }
 .detail-header { padding: 4px 0 16px; border-bottom: 1px solid var(--oh-border); }
 .detail-header strong { font-size: 18px; }
@@ -534,15 +566,17 @@ onUnmounted(() => offHarnessUpdated?.())
 .detail-skill span:nth-child(2) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-skill:hover { border-color: var(--oh-primary); }
 .skill-content { max-height: 55vh; margin-top: 14px; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--oh-border); border-radius: 8px; font: 13px/1.7 Consolas, 'JetBrains Mono', monospace; }
-:deep(.harness-target-dialog.el-dialog) { width: min(960px, calc(100vw - 32px)) !important; max-height: calc(100vh - 48px); margin: 24px auto !important; aspect-ratio: 16 / 9; display: flex; flex-direction: column; overflow: hidden; }
+:deep(.harness-target-dialog.el-dialog) { width: min(960px, calc(100vw - 32px)) !important; max-height: calc(100vh - 48px); min-height: 0; margin: auto !important; aspect-ratio: 16 / 9; display: flex; flex-direction: column; overflow: hidden; }
 :deep(.harness-target-dialog .el-dialog__header), :deep(.harness-target-dialog .el-dialog__footer) { flex-shrink: 0; }
 :deep(.harness-target-dialog .el-dialog__body) { min-height: 0; flex: 1; overflow: auto; }
 @media (max-width: 900px) {
+  .target-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .section-head { align-items: flex-start; flex-direction: column; }
   .scan-tools, .library-tools { width: 100%; justify-content: flex-start; }
   .scan-tools .el-input, .library-tools .el-input { width: min(100%, 360px); }
 }
 @media (max-width: 600px) {
+  .target-card-grid { grid-template-columns: 1fr; }
   .page-head { align-items: flex-start; }
   .actions { width: 100%; justify-content: flex-start; }
   .harness-skill-card { height: 260px; }
