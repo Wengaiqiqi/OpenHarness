@@ -548,7 +548,7 @@ onUnmounted(() => offHarnessUpdated?.())
 .target-card-top, .target-card-title, .target-card-foot { display: flex; align-items: center; min-width: 0; }
 .target-card-top { justify-content: flex-end; gap: 8px; }
 .target-card-top .el-checkbox { margin-left: auto; margin-right: 0; }
-.target-card-title { gap: 9px; margin: 13px 0 8px; }
+.target-card-title { gap: 9px; margin: 0 0 8px; }
 .target-card-title strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
 .target-card-icon, .target-card-avatar { width: 34px; height: 34px; border-radius: 9px; object-fit: contain; flex-shrink: 0; }
 .target-card-avatar { display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
