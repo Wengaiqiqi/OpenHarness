@@ -31,6 +31,7 @@ const addVisible = ref(false)
 const targetsVisible = ref(false)
 const form = ref({ type: 'local', path: '', url: '', subdir: '', folder: '' })
 const target = ref({ name: '', path: '' })
+const scanCacheKey = 'openharness.skills.scan.v1'
 
 const targetCards = computed(() => harnesses.value
   .map((harness) => {
@@ -94,6 +95,29 @@ async function load(force = false) {
   })
 }
 
+function restoreScanCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(scanCacheKey) || 'null')
+    if (!cached || !Array.isArray(cached.found)) return
+    found.value = cached.found
+      .filter((item) => item && typeof item === 'object' && typeof item.path === 'string' && item.path)
+      .map((item) => ({
+        path: item.path,
+        targetId: typeof item.targetId === 'string' ? item.targetId : '',
+        tool: String(item.tool || ''),
+        name: String(item.name || item.path),
+        description: String(item.description || '')
+      }))
+    scanErrors.value = Array.isArray(cached.errors) ? cached.errors.filter((item) => typeof item === 'string') : []
+  } catch {}
+}
+
+function persistScanCache() {
+  try {
+    localStorage.setItem(scanCacheKey, JSON.stringify({ found: found.value, errors: scanErrors.value }))
+  } catch {}
+}
+
 function enterManagement() {
   managing.value = true
   managementTab.value = 'scan'
@@ -113,10 +137,16 @@ async function scan() {
     const result = await api.skillsScan()
     found.value = result.found || []
     scanErrors.value = result.errors || []
+    persistScanCache()
     scanQuery.value = ''
     selectedScan.value = []
     importedScan.value = new Set()
   })
+}
+
+async function refreshScan() {
+  await load(true)
+  await scan()
 }
 
 function setScanSelected(path, checked) {
@@ -265,6 +295,7 @@ async function removeTarget(id) {
 
 let offHarnessUpdated = null
 onMounted(() => {
+  restoreScanCache()
   load()
   if (api.onHarnessUpdated) offHarnessUpdated = api.onHarnessUpdated(async (list) => {
     harnesses.value = list || []
@@ -328,7 +359,7 @@ onUnmounted(() => offHarnessUpdated?.())
           <p class="page-sub">扫描本机 Skill，勾选后导入到指定 Harness</p>
         </div>
         <div class="actions">
-          <el-button :icon="Refresh" :disabled="busy" @click="load(true)">刷新</el-button>
+          <el-button :icon="Refresh" :disabled="busy" @click="refreshScan">刷新</el-button>
           <el-tooltip content="配置各 Harness 实际读取 Skill 的文件夹；扫描和导入都会使用这里的目录" placement="bottom">
             <el-button :disabled="busy" @click="targetsVisible = true">Skill 目录</el-button>
           </el-tooltip>
@@ -342,7 +373,7 @@ onUnmounted(() => offHarnessUpdated?.())
         <el-tab-pane label="扫描本机" name="scan">
           <section class="manage-section scan-section">
             <div class="section-head">
-              <div><h2>本机扫描结果</h2><p class="muted">只显示包含 SKILL.md 的目录；原目录不会被修改。</p></div>
+              <div><h2>本机扫描结果</h2><p class="muted">只显示包含 SKILL.md 的目录；结果会保留到下次手动刷新或重新扫描，原目录不会被修改。</p></div>
               <div v-if="found.length" class="scan-tools"><el-input v-model="scanQuery" :prefix-icon="Search" placeholder="搜索名称、说明、工具或路径" clearable aria-label="搜索扫描结果" /><span class="scan-count" role="status">已选 {{ selectedScanItems.length }} · {{ scanResults.length }} / {{ found.length }}</span></div>
             </div>
             <div v-if="scanErrors.length" class="scan-errors"><el-alert v-for="item in scanErrors" :key="item" type="warning" :title="item" :closable="false" /></div>
