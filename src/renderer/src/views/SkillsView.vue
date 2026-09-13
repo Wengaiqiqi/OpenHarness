@@ -349,7 +349,7 @@ onUnmounted(() => offHarnessUpdated?.())
               <el-tag size="small" :type="card.installed ? 'success' : card.exists ? 'info' : 'warning'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag>
             </div>
           </div>
-          <div class="harness-card-count"><strong>{{ card.skills.length }}</strong><span>个本机 Skill</span></div>
+          <div class="harness-card-count"><span>已装</span><strong>{{ card.skills.length }}</strong><span>个 Skill</span></div>
           <div v-if="card.skills.length" class="harness-skill-list">
             <div v-for="skill in card.skills.slice(0, 4)" :key="skill.path" class="harness-skill-row" :title="skill.name"><span class="skill-dot" />{{ skill.name }}</div>
             <div v-if="card.skills.length > 4" class="harness-more">还有 {{ card.skills.length - 4 }} 个，点击查看全部</div>
@@ -466,7 +466,7 @@ onUnmounted(() => offHarnessUpdated?.())
     </el-dialog>
 
     <el-dialog :model-value="!!harnessDetail" :title="`${harnessDetail?.name || 'Harness'} · 本机 Skill`" width="min(720px, 92vw)" @close="harnessDetail = null">
-      <div v-if="harnessDetail" class="harness-detail"><div class="detail-header"><img v-if="harnessDetail.icon" :src="harnessDetail.icon" class="harness-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(harnessDetail.icon || '') }" :alt="`${harnessDetail.name} 图标`" @error="iconFallback($event, harnessDetail.name, harnessDetail.color)" /><div v-else class="harness-avatar" :style="{ background: harnessDetail.color || 'var(--oh-primary)' }">{{ (harnessDetail.name || 'Harness').slice(0, 2).toUpperCase() }}</div><div><strong>{{ harnessDetail.skills.length }} 个 Skill</strong><div class="path">{{ harnessDetail.path || '未配置 Skill 目录' }}</div></div></div><div v-if="harnessDetail.skills.length" class="detail-skill-list"><div v-for="skill in harnessDetail.skills" :key="skill.path" class="detail-skill" :class="{ clickable: skill.id }" @click="skill.id && openSkillDetail(skill)"><span class="skill-dot" /><span>{{ skill.name }}</span><span class="muted">{{ skill.id ? '查看内容 →' : '本机已有' }}</span></div></div><div v-else class="manage-empty compact"><span>这个 Harness 还没有发现 Skill。</span></div></div>
+      <div v-if="harnessDetail" class="harness-detail"><div class="detail-header"><img v-if="harnessDetail.icon" :src="harnessDetail.icon" class="harness-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(harnessDetail.icon || '') }" :alt="`${harnessDetail.name} 图标`" @error="iconFallback($event, harnessDetail.name, harnessDetail.color)" /><div v-else class="harness-avatar" :style="{ background: harnessDetail.color || 'var(--oh-primary)' }">{{ (harnessDetail.name || 'Harness').slice(0, 2).toUpperCase() }}</div><div><strong>{{ harnessDetail.skills.length }} 个 Skill</strong><div class="path">{{ harnessDetail.path || '未配置 Skill 目录' }}</div></div></div><div v-if="harnessDetail.skills.length" class="detail-skill-list"><div v-for="skill in harnessDetail.skills" :key="skill.path" class="detail-skill" :class="{ clickable: skill.id }" @click="skill.id && openSkillDetail(skill)"><span class="skill-dot" /><span>{{ skill.name }}</span><span class="muted">{{ skill.id ? '查看内容 →' : 'Harness 已装' }}</span></div></div><div v-else class="manage-empty compact"><span>这个 Harness 还没有发现 Skill。</span></div></div>
     </el-dialog>
 
     <el-dialog :model-value="!!detail" :title="detail?.name || 'Skill 内容'" width="min(800px, 92vw)" @close="detail = null">
