@@ -87,27 +87,26 @@ app.whenReady().then(async () => {
     button.click()
   })()`)
   await waitFor("!!document.querySelector('.skills-page')")
+  assert.equal(await win.webContents.executeJavaScript("!![...document.querySelectorAll('button')].find(b => b.textContent.trim() === '导入 Skill' && b.getClientRects().length)"), false)
+  await waitFor("document.querySelectorAll('.harness-skill-card').length >= 1")
+  await clickText('Skill 管理')
+  await waitFor("document.querySelector('.skills-page.is-manage')")
   await clickText('扫描本机')
   await waitFor("document.querySelectorAll('.scan-item').length === 25")
-  await waitFor("!document.querySelector('.skill-scan-dialog').closest('.el-overlay').className.includes('enter-active')")
   for (const [width, height, zoom] of [[1280, 820, 1], [960, 600, 1], [1600, 900, 1], [960, 600, 1.25]]) {
     win.setContentSize(width, height)
     win.webContents.setZoomFactor(zoom)
     await new Promise(resolve => setTimeout(resolve, 150))
     const fit = await win.webContents.executeJavaScript(`(() => {
-      const dialog = document.querySelector('.skill-scan-dialog'), results = document.querySelector('.scan-results')
-      const r = dialog.getBoundingClientRect(), list = results.getBoundingClientRect()
-      return { ratio: r.width / r.height, fits: r.left >= 0 && r.top >= 36 && r.right <= innerWidth && r.bottom <= innerHeight,
-        scrolls: results.scrollHeight > results.clientHeight, noHorizontalOverflow: dialog.scrollWidth <= dialog.clientWidth,
-        listFits: list.bottom <= document.querySelector('.scan-footer').getBoundingClientRect().top,
-        labelsFit: [...document.querySelectorAll('.scan-item')].every(item => {
-          const tag = item.querySelector('.el-tag'), content = tag.querySelector('.el-tag__content')
-          return tag.getBoundingClientRect().right <= item.getBoundingClientRect().right && tag.title === tag.textContent.trim()
-            && (tag.title.length < 50 || (content.scrollWidth > content.clientWidth && getComputedStyle(content).textOverflow === 'ellipsis'))
-        }) }
+      const grid = document.querySelector('.scan-grid'), cards = [...document.querySelectorAll('.scan-item')]
+      const rects = cards.map((item) => item.getBoundingClientRect())
+      const width = rects[0]?.width || 0, height = rects[0]?.height || 0
+      return { uniform: rects.every((r) => Math.abs(r.width - width) < 1 && Math.abs(r.height - height) < 1),
+        bounded: cards.every((item) => { const r = item.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1 }),
+        fixedHeight: height >= 200 && height <= 230, noHorizontalOverflow: grid.scrollWidth <= grid.clientWidth + 1,
+        noPageOverflow: document.querySelector('.skills-page').scrollWidth <= document.querySelector('.skills-page').clientWidth + 1 }
     })()`)
-    assert.ok(Math.abs(fit.ratio - 16 / 9) < 0.01, JSON.stringify(fit))
-    assert.ok(fit.fits && fit.scrolls && fit.noHorizontalOverflow && fit.listFits && fit.labelsFit, JSON.stringify(fit))
+    assert.ok(fit.uniform && fit.bounded && fit.fixedHeight && fit.noHorizontalOverflow && fit.noPageOverflow, JSON.stringify(fit))
   }
   for (const [query, count] of [['  LOCAL SKILL 12  ', 1], ['中文检索', 1], ['Claude Code', 24], ['scan-23', 1], ['no-match-example', 0], ['', 25]]) {
     await win.webContents.executeJavaScript(`(() => {
@@ -120,29 +119,27 @@ app.whenReady().then(async () => {
   win.setContentSize(1280, 820)
   await new Promise(resolve => setTimeout(resolve, 150))
   fs.writeFileSync(path.join(dir, 'skills-scan.png'), (await win.webContents.capturePage()).toPNG())
-  console.log('Scan dialog screenshot:', path.join(dir, 'skills-scan.png'))
-  await clickText('完成')
-  await clickText('导入 Skill')
-  await waitFor("!!document.querySelector('[aria-label=\"选择 Skill 文件夹\"]')")
-  await win.webContents.executeJavaScript("document.querySelector('[aria-label=\"选择 Skill 文件夹\"]').click()")
-  await waitFor("document.querySelector('input[placeholder^=\"如 my-skill\"]')?.value === 'smoke-skill'")
-  await clickText('导入')
-  await waitFor("!!document.querySelector('.skill-card')")
-  assert.equal(skillService.list().skills[0].name, 'Smoke Skill')
-  await clickText('同步工具')
-  await waitFor("!!document.querySelector('.el-checkbox-group .el-checkbox')")
+  console.log('Skills management screenshot:', path.join(dir, 'skills-scan.png'))
   await win.webContents.executeJavaScript(`(() => {
-    const label = [...document.querySelectorAll('.el-checkbox')].find(e => e.textContent.includes('Codex'))
+    [...document.querySelectorAll('.scan-item input[type="checkbox"]')].slice(0, 2).forEach((input) => input.click())
+  })()`)
+  await waitFor("document.querySelector('.scan-count')?.textContent.includes('已选 2')")
+  await clickText('导入 Skill')
+  await waitFor("!!document.querySelector('[aria-label=\"选择目标 Harness\"]')")
+  await win.webContents.executeJavaScript(`(() => {
+    const label = [...document.querySelectorAll('.import-target-row .el-checkbox')].find(e => e.textContent.includes('Codex'))
+    if (!label) throw new Error('Codex target missing')
     label.querySelector('input').click()
   })()`)
-  await clickText('保存同步状态')
-  await waitFor("document.querySelector('.skill-card .tags')?.textContent.includes('Codex')")
-  const synced = path.join(dir, 'home', '.codex', 'skills', 'smoke-skill', 'SKILL.md')
-  assert.match(fs.readFileSync(synced, 'utf8'), /SKILL_SMOKE_OK/)
-  await win.webContents.reload()
-  await waitFor("document.querySelector('.skill-card .tags')?.textContent.includes('Codex')")
-  await clickText('查看')
-  await waitFor("document.querySelector('.skill-content')?.textContent.includes('SKILL_SMOKE_OK')")
+  await clickText('导入到选中 Harness')
+  await waitFor("document.querySelectorAll('.library-card').length === 2")
+  const imported = skillService.list().skills
+  assert.equal(imported.length, 2)
+  assert.ok(imported.every((skill) => skill.targets.some((item) => item.id === 'codex' && item.state === 'on')))
+  await win.webContents.executeJavaScript("document.querySelector('.manage-back').click()")
+  await waitFor("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]')?.textContent.includes('2')")
+  await win.webContents.executeJavaScript("document.querySelector('.harness-skill-card[data-target-id=\"codex\"]').click()")
+  await waitFor("document.querySelector('.harness-detail') && document.querySelectorAll('.detail-skill').length === 2")
   const terminalOutput = await new Promise((resolve, reject) => {
     let output = ''
     terminal = pty.spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'echo NATIVE_PTY_OK'], { cols: 80, rows: 24, cwd: dir, env: process.env })
@@ -153,7 +150,7 @@ app.whenReady().then(async () => {
     })
   })
   assert.match(terminalOutput, /NATIVE_PTY_OK/)
-  console.log(`PASS Electron ${process.versions.electron}: built renderer, preload IPC, chat persistence, Skills scan search/responsive 16:9/import/sync/reload/detail, native PTY`)
+  console.log(`PASS Electron ${process.versions.electron}: built renderer, preload IPC, chat persistence, Skills overview/manage scan/search/select/import/target/detail, native PTY`)
 }).catch((error) => { console.error(error); process.exitCode = 1 }).finally(() => {
   clearTimeout(timeout)
   win?.destroy()
