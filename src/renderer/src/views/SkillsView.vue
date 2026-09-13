@@ -426,7 +426,7 @@ onUnmounted(() => offHarnessUpdated?.())
       <p class="muted">已选择 {{ selectedScanItems.length }} 个 Skill。勾选目标后导入，已有同名目录不会被覆盖。</p>
       <el-checkbox-group v-model="selectedTargets" class="target-card-grid" aria-label="选择目标 Harness">
         <article v-for="card in syncTargets" :key="card.id" class="target-card" :data-target-id="card.id" :class="{ selected: selectedTargets.includes(card.id) }" role="button" tabindex="0" @click="toggleImportTarget(card.id)" @keydown.enter.prevent="toggleImportTarget(card.id)">
-          <div class="target-card-top"><el-checkbox :value="card.id" :aria-label="`选择 ${card.name}`" @click.stop /><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></div>
+          <div class="target-card-top"><el-tag v-if="!card.installed" size="small" type="info" effect="plain">{{ card.exists ? '目录可用' : '未检测到' }}</el-tag><el-checkbox :value="card.id" :aria-label="`选择 ${card.name}`" @click.stop /></div>
           <div class="target-card-title"><img v-if="card.icon" :src="card.icon" class="target-card-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-card-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong :title="card.name">{{ card.name }}</strong></div>
           <p class="target-card-desc">{{ card.desc || '读取此 Harness 配置的 Skill 目录。' }}</p>
           <div class="target-card-foot"><span class="path" :title="card.path">{{ card.path }}</span></div>
@@ -439,7 +439,7 @@ onUnmounted(() => offHarnessUpdated?.())
       <p class="muted">选择「{{ syncing?.name }}」要同步到的 Harness；取消勾选会移除由本应用创建的同步链接。</p>
       <el-checkbox-group v-model="selectedSyncTargets" class="target-card-grid" aria-label="选择同步 Harness">
         <article v-for="card in syncTargets" :key="card.id" class="target-card" :data-target-id="card.id" :class="{ selected: selectedSyncTargets.includes(card.id), disabled: syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict' }" role="button" tabindex="0" @click="toggleSyncTarget(card.id)" @keydown.enter.prevent="toggleSyncTarget(card.id)">
-          <div class="target-card-top"><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'" :aria-label="`选择 ${card.name}`" @click.stop /><el-tag size="small" :type="card.installed ? 'success' : 'info'" effect="plain">{{ card.installed ? '已安装' : card.exists ? '目录可用' : '未检测到' }}</el-tag></div>
+          <div class="target-card-top"><el-tag v-if="!card.installed" size="small" type="info" effect="plain">{{ card.exists ? '目录可用' : '未检测到' }}</el-tag><el-checkbox :value="card.id" :disabled="syncing?.targets.find((item) => item.id === card.id)?.state === 'conflict'" :aria-label="`选择 ${card.name}`" @click.stop /></div>
           <div class="target-card-title"><img v-if="card.icon" :src="card.icon" class="target-card-icon" :class="{ 'harness-icon-dark': appStore.theme === 'dark' && /simpleicons|jsdelivr/.test(card.icon || '') }" :alt="`${card.name} 图标`" @error="iconFallback($event, card.name, card.color)" /><span v-else class="target-card-avatar" :style="{ background: card.color || 'var(--oh-primary)' }">{{ (card.name || '?').slice(0, 2).toUpperCase() }}</span><strong :title="card.name">{{ card.name }}</strong></div>
           <p class="target-card-desc">{{ card.desc || '读取此 Harness 配置的 Skill 目录。' }}</p>
           <div class="target-card-foot"><span class="path" :title="card.path">{{ card.path }}</span></div>
@@ -546,8 +546,8 @@ onUnmounted(() => offHarnessUpdated?.())
 .target-card.selected { border-color: var(--oh-primary); background: var(--oh-primary-soft); }
 .target-card.disabled { opacity: .6; cursor: not-allowed; }
 .target-card-top, .target-card-title, .target-card-foot { display: flex; align-items: center; min-width: 0; }
-.target-card-top { justify-content: space-between; }
-.target-card-top .el-checkbox { margin-right: 0; }
+.target-card-top { justify-content: flex-end; gap: 8px; }
+.target-card-top .el-checkbox { margin-left: auto; margin-right: 0; }
 .target-card-title { gap: 9px; margin: 13px 0 8px; }
 .target-card-title strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
 .target-card-icon, .target-card-avatar { width: 34px; height: 34px; border-radius: 9px; object-fit: contain; flex-shrink: 0; }
