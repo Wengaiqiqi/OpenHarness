@@ -184,7 +184,7 @@ app.whenReady().then(async () => {
   assert.ok(targetDialog.cards >= 4)
   assert.equal(targetDialog.hasInstalledLabel, false)
   assert.ok(targetDialog.checkboxRight > targetDialog.cardRight - 80, JSON.stringify(targetDialog))
-  assert.ok(targetDialog.cardHeight <= 170 && targetDialog.footTop - targetDialog.cardTop < 130, JSON.stringify(targetDialog))
+  assert.ok(targetDialog.cardHeight <= 154 && targetDialog.footTop - targetDialog.cardTop < 130, JSON.stringify(targetDialog))
   assert.ok(targetDialog.iconTop - targetDialog.cardTop <= 20, JSON.stringify(targetDialog))
   assert.ok(!targetDialog.statusBottom || targetDialog.statusIconTop >= targetDialog.statusBottom, JSON.stringify(targetDialog))
   assert.ok(Math.abs(targetDialog.width / targetDialog.height - 16 / 9) < 0.08 && targetDialog.width <= targetDialog.viewportWidth && targetDialog.height <= targetDialog.viewportHeight, JSON.stringify(targetDialog))

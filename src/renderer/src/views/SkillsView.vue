@@ -541,7 +541,7 @@ onUnmounted(() => offHarnessUpdated?.())
 .card-actions { justify-content: flex-end; flex-wrap: wrap; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--oh-border); }
 .card-actions .el-button + .el-button { margin-left: 0; }
 .target-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.target-card { position: relative; height: 168px; min-width: 0; padding: 15px; border: 1px solid var(--oh-border); border-radius: 13px; display: flex; flex-direction: column; background: var(--oh-bg-card); cursor: pointer; transition: border-color var(--oh-dur) var(--oh-ease), background var(--oh-dur) var(--oh-ease), transform var(--oh-dur) var(--oh-ease); }
+.target-card { position: relative; height: 152px; min-width: 0; padding: 15px; border: 1px solid var(--oh-border); border-radius: 13px; display: flex; flex-direction: column; background: var(--oh-bg-card); cursor: pointer; transition: border-color var(--oh-dur) var(--oh-ease), background var(--oh-dur) var(--oh-ease), transform var(--oh-dur) var(--oh-ease); }
 .target-card:hover, .target-card:focus-visible { border-color: var(--oh-primary); transform: translateY(-1px); outline: none; }
 .target-card.selected { border-color: var(--oh-primary); background: var(--oh-primary-soft); }
 .target-card.disabled { opacity: .6; cursor: not-allowed; }
@@ -554,7 +554,7 @@ onUnmounted(() => offHarnessUpdated?.())
 .target-card-icon, .target-card-avatar { width: 34px; height: 34px; border-radius: 9px; object-fit: contain; flex-shrink: 0; }
 .target-card-avatar { display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
 .target-card-desc { height: 40px; margin: 0; color: var(--oh-text-dim); font-size: 12px; line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.target-card-foot { min-width: 0; margin-top: 0; padding-top: 8px; border-top: 1px solid var(--oh-border); }
+.target-card-foot { min-width: 0; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--oh-border); }
 .target-card.has-status .target-card-foot { padding-top: 4px; }
 .target-card-foot .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .target-row { padding: 10px 4px; border-bottom: 1px solid var(--oh-border); }
