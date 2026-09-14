@@ -27,7 +27,11 @@ app.config.errorHandler = (err, _inst, info) => surfaceError(`渲染错误:${inf
 window.addEventListener('unhandledrejection', (e) =>
   surfaceError('异步错误', e.reason)
 )
-window.addEventListener('error', (e) => surfaceError('脚本错误', e.error || e.message))
+window.addEventListener('error', (e) => {
+  // Chromium 将 ResizeObserver 的未递交通知作为 error 事件派发；它不是应用脚本异常。
+  if (e.message === 'ResizeObserver loop completed with undelivered notifications.' || e.message === 'ResizeObserver loop limit exceeded') return
+  surfaceError('脚本错误', e.error || e.message)
+})
 
 for (const [name, comp] of Object.entries({ HomeFilled, ChatDotRound, Monitor, Box, Cpu, Connection, Collection, Setting, Loading, ArrowDown, Link })) {
   app.component(name, comp)
