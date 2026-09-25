@@ -17,10 +17,12 @@ const timeout = setTimeout(() => { console.error('smoke timeout'); app.exit(1) }
 
 app.whenReady().then(async () => {
   const data = { sessions: [], settings: { theme: 'dark' } }
+  let copied = ''
   ipcMain.handle('db:get', (_e, key) => data[key])
   ipcMain.handle('db:set', (_e, key, value) => { data[key] = value; return true })
   ipcMain.handle('db:patchSettings', (_e, patch) => Object.assign(data.settings, patch))
   ipcMain.handle('app:syncThemeOverlay', () => true)
+  ipcMain.handle('clipboard:writeText', (_e, text) => { copied = text; return true })
   let harnessList = [
     { id: 'codex', name: 'Codex', color: '#10a37f', icon: 'https://cdn.simpleicons.org/openai/10a37f', installed: true },
     { id: 'claude-code', name: 'Claude Code', color: '#d97757', icon: 'icons/claude.svg', installed: true },
@@ -67,7 +69,7 @@ app.whenReady().then(async () => {
   const source = fs.readFileSync(path.join(root, 'src/main/chat.js'), 'utf8')
   const { createChatService } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
   const chat = createChatService()
-  global.fetch = async () => new Response('data: {"choices":[{"delta":{"content":"SMOKE_OK"}}]}\n\ndata: [DONE]\n\n')
+  global.fetch = async () => new Response('data: {"choices":[{"delta":{"content":"# SMOKE_OK"}}]}\n\ndata: [DONE]\n\n')
   ipcMain.handle('chat:send', (_e, payload) => chat.send(win, payload))
   win = new BrowserWindow({ show: false, webPreferences: { preload: path.join(appRoot, 'out/preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: false } })
   win.webContents.on('console-message', (event) => { if (event.level === 'error') console.error(event.message) })
@@ -89,10 +91,28 @@ app.whenReady().then(async () => {
     input.dispatchEvent(new Event('input', { bubbles: true }))
     document.querySelector('.input-foot .el-button').click()
   })()`)
-  for (let n = 0; n < 50 && !data.sessions[0]?.messages.some((m) => m.content === 'SMOKE_OK'); n++) {
+  for (let n = 0; n < 50 && !data.sessions[0]?.messages.some((m) => m.content === '# SMOKE_OK'); n++) {
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  assert.equal(data.sessions[0]?.messages.at(-1).content, 'SMOKE_OK')
+  assert.equal(data.sessions[0]?.messages.at(-1).content, '# SMOKE_OK')
+  const actionPlacement = await win.webContents.executeJavaScript(`(() => {
+    const card = document.querySelector('.answer-card').getBoundingClientRect()
+    const actions = document.querySelector('.answer-actions').getBoundingClientRect()
+    return { rightInset: card.right - actions.right, topInset: actions.top - card.top }
+  })()`)
+  assert.ok(actionPlacement.rightInset >= 10 && actionPlacement.rightInset <= 24 && actionPlacement.topInset <= 24,
+    JSON.stringify(actionPlacement))
+  await win.webContents.executeJavaScript("document.querySelector('.answer-action[title=\"复制回答\"]').click()")
+  for (let n = 0; n < 50 && copied !== '# SMOKE_OK'; n++) await new Promise((resolve) => setTimeout(resolve, 100))
+  assert.equal(copied, '# SMOKE_OK')
+  await win.webContents.executeJavaScript("document.querySelector('.answer-action[title=\"展开回答\"]').click()")
+  for (let n = 0; n < 50; n++) {
+    if (await win.webContents.executeJavaScript("document.querySelector('.answer-dialog .expanded-answer h1')?.textContent.trim() === 'SMOKE_OK'")) break
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('.answer-dialog .expanded-answer h1')?.textContent.trim()"), 'SMOKE_OK')
+  await win.webContents.executeJavaScript("document.querySelector('.answer-dialog .el-dialog__headerbtn').click()")
+  await new Promise((resolve) => setTimeout(resolve, 250))
   await win.webContents.executeJavaScript("location.hash = '#/skills'")
   async function waitFor(script) {
     for (let n = 0; n < 50; n++) {

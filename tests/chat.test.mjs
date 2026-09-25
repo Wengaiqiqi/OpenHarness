@@ -89,6 +89,28 @@ test('one session rejects overlap until the aborted request has fully unwound', 
   assert.deepEqual(await chat.send(win, payload), { ok: true })
 })
 
+test('one session can stream separate model requests and abort only one', async () => {
+  const streams = new Map()
+  globalThis.fetch = async (_url, { body, signal }) => new Response(new ReadableStream({
+    start(controller) {
+      streams.set(JSON.parse(body).model, controller)
+      signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+    }
+  }))
+  const chat = createChatService()
+  const win = windowMock()
+  const first = chat.send(win, { ...payload, requestId: 'r1', model: 'first' })
+  const second = chat.send(win, { ...payload, requestId: 'r2', model: 'second' })
+  await new Promise(setImmediate)
+  assert.equal(streams.size, 2)
+  chat.abort('r1')
+  streams.get('second').enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n'))
+  assert.equal((await first).aborted, true)
+  assert.deepEqual(await second, { ok: true })
+  assert.deepEqual(win.chunks.filter((chunk) => chunk.type === 'delta').map((chunk) => chunk.requestId), ['r2'])
+  assert.equal(win.chunks.find((chunk) => chunk.requestId === 'r1' && chunk.type === 'done')?.aborted, true)
+})
+
 test('invalid URL construction does not leave a controller behind', async () => {
   const chat = createChatService()
   await assert.rejects(chat.send({ isDestroyed: () => false, webContents: { send() {} } }, {

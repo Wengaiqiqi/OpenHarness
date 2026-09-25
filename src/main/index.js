@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, screen, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, screen, dialog, clipboard } from 'electron'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import fs from 'node:fs'
@@ -348,8 +348,14 @@ ipcMain.handle('provider:listModels', async (_e, { type, baseUrl, apiKey }) => {
 })
 
 /* ---------------- IPC: 对话 ---------------- */
-ipcMain.handle('chat:send', async (_e, { sessionId, provider, model, messages, thinkingLevel }) => {
-  return chat.send(mainWindow, { sessionId, provider, model, messages, thinkingLevel })
+ipcMain.handle('clipboard:writeText', (_e, text) => {
+  if (typeof text !== 'string') throw new Error('无效的复制内容')
+  clipboard.writeText(text)
+  return true
+})
+
+ipcMain.handle('chat:send', async (_e, { sessionId, requestId, provider, model, messages, thinkingLevel }) => {
+  return chat.send(mainWindow, { sessionId, requestId, provider, model, messages, thinkingLevel })
 })
 
 ipcMain.handle('chat:abort', (_e, sessionId) => {

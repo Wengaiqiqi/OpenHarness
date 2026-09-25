@@ -117,6 +117,15 @@ test('generic storage cannot bypass provider validation or overwrite the proxy t
   assert.equal(s.call('db:get', 'sessions')[0].id, 'test')
 })
 
+test('clipboard IPC accepts answer text only', () => {
+  const s = setup()
+  const copied = []
+  s.context.clipboard = { writeText: (text) => copied.push(text) }
+  assert.equal(s.call('clipboard:writeText', 'answer'), true)
+  assert.deepEqual(copied, ['answer'])
+  assert.throws(() => s.call('clipboard:writeText', {}))
+})
+
 test('quit waits for external application shutdown before terminating', async () => {
   const s = setup()
   let finish

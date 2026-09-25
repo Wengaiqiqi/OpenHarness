@@ -1,23 +1,36 @@
 <script setup>
 import { api } from '@/api'
 import OhLogo from '@/components/OhLogo.vue'
+import MarkdownIt from 'markdown-it'
 import { ref, onMounted, onUnmounted, onActivated, onDeactivated, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Promotion, Delete, VideoPause, EditPen } from '@element-plus/icons-vue'
+import { Plus, Promotion, Delete, VideoPause, EditPen, CopyDocument, FullScreen } from '@element-plus/icons-vue'
 import { useAppStore } from '@/store/app'
 
 const appStore = useAppStore()
+const MAX_MODELS = 6
+const markdown = new MarkdownIt({ html: false, breaks: true }).disable('image')
+markdown.validateLink = (url) => /^https?:\/\//i.test(url)
+markdown.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
+  tokens[index].attrSet('target', '_blank')
+  tokens[index].attrSet('rel', 'noopener noreferrer')
+  return renderer.renderToken(tokens, index, options)
+}
 const sessions = ref([])
 const activeId = ref(null)
 const input = ref('')
 const streaming = ref(false)
 const streamingSessionId = ref(null)
 const providers = ref([])
-const providerId = ref('')
-const model = ref('')
 const thinkingLevel = ref('medium')
 const stopping = ref(false)
 const requestPending = ref(false)
+const selectedModels = ref([])
+const modelSearch = ref('')
+const modelPickerOpen = ref(false)
+const expandedReply = ref(null)
+const expandVisible = ref(false)
+const activeRequestIds = new Set()
 
 const messagesEl = ref(null)
 let unsubscribe = null
@@ -39,7 +52,74 @@ const thinkingOptions = [
 ]
 
 const activeSession = computed(() => sessions.value.find((s) => s.id === activeId.value))
-const activeProvider = computed(() => providers.value.find((p) => p.id === providerId.value))
+const expandedHtml = computed(() => markdown.render(expandedReply.value?.content || '正在等待模型回答…'))
+const availableModels = computed(() => providers.value.map((provider) => ({
+  ...provider,
+  visibleModels: (provider.models || []).filter((name) =>
+    `${provider.name} ${name}`.toLowerCase().includes(modelSearch.value.trim().toLowerCase()))
+})).filter((provider) => provider.visibleModels.length))
+const activeTurns = computed(() => {
+  const turns = []
+  for (const [index, message] of (activeSession.value?.messages || []).entries()) {
+    if (message.role === 'user') turns.push({ user: message, userIndex: index, replies: [] })
+    else if (turns.length) turns[turns.length - 1].replies.push(message)
+  }
+  return turns
+})
+
+function modelKey(item) {
+  return `${item.providerId}\u0000${item.model}`
+}
+
+function sessionModels(s) {
+  return s.selectedModels?.length ? s.selectedModels :
+    s.providerId && s.model ? [{ providerId: s.providerId, model: s.model }] : []
+}
+
+function validModels(models) {
+  return models.filter((item) => providers.value.some((p) =>
+    p.id === item.providerId && p.models?.includes(item.model))).slice(0, MAX_MODELS)
+}
+
+function isSelected(providerId, model) {
+  return selectedModels.value.some((item) => item.providerId === providerId && item.model === model)
+}
+
+function toggleModel(providerId, model, checked) {
+  if (streaming.value || requestPending.value) return
+  const next = selectedModels.value.filter((item) => modelKey(item) !== modelKey({ providerId, model }))
+  if (checked) {
+    if (next.length >= MAX_MODELS) {
+      ElMessage.warning(`最多选择 ${MAX_MODELS} 个模型`)
+      return
+    }
+    next.push({ providerId, model })
+  }
+  selectedModels.value = next
+  if (activeSession.value) {
+    activeSession.value.selectedModels = next
+    schedulePersist()
+  }
+}
+
+function providerName(providerId) {
+  return providers.value.find((p) => p.id === providerId)?.name || providerId || '模型'
+}
+
+async function copyReply(reply) {
+  if (!reply.content) return
+  try {
+    await api.copyText(reply.content)
+    ElMessage.success('已复制回答')
+  } catch (err) {
+    ElMessage.error(`复制失败：${String(err)}`)
+  }
+}
+
+function expandReply(reply) {
+  expandedReply.value = reply
+  expandVisible.value = true
+}
 
 // 思考过程折叠状态（按消息下标，默认全部折叠）
 const openReasonings = ref({})
@@ -49,10 +129,8 @@ function toggleReasoning(i) {
 }
 
 // 标题：流式中显示"思考中…"，完成后显示"已思考 (X 秒)"
-function reasoningTitle(m, i) {
-  const isThinking =
-    streamingSessionId.value === activeSession.value?.id &&
-    m.role === 'assistant' && !m.content && activeSession.value?.messages[i] === m
+function reasoningTitle(m) {
+  const isThinking = ['pending', 'streaming'].includes(m.status) && !m.content
   if (isThinking) return '思考中…'
   return `已思考 (${reasoningSeconds(m)} 秒)`
 }
@@ -87,13 +165,25 @@ function flushPersist() {
 async function refreshProviders() {
   const next = (await api.providerGetAll()) || []
   providers.value = next
-  const selected = next.find((p) => p.id === providerId.value) || next[0]
-  providerId.value = selected?.id || ''
-  if (!selected?.models?.includes(model.value)) model.value = selected?.models?.[0] || ''
+  selectedModels.value = validModels(selectedModels.value)
+  if (!selectedModels.value.length && next[0]?.models?.length) {
+    selectedModels.value = [{ providerId: next[0].id, model: next[0].models[0] }]
+  }
 }
 
 async function load() {
   sessions.value = (await api.dbGet('sessions')) || []
+  let recovered = false
+  for (const session of sessions.value) {
+    for (const message of session.messages || []) {
+      if (['pending', 'streaming'].includes(message.status)) {
+        message.status = 'stopped'
+        if (!message.content) message.content = '（已中断）'
+        recovered = true
+      }
+    }
+  }
+  if (recovered) await persist()
   const settings = (await api.dbGet('settings')) || {}
   thinkingLevel.value = settings.thinkingLevel || 'medium'
   await refreshProviders()
@@ -105,17 +195,18 @@ function setThinkingLevel(v) {
 }
 
 function newSession() {
+  expandVisible.value = false
   const s = {
-    id: `sess-${Date.now()}`,
+    id: `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     title: '新对话',
-    providerId: providerId.value,
-    model: model.value,
+    selectedModels: [...selectedModels.value],
     messages: [],
     createdAt: Date.now()
   }
   sessions.value.unshift(s)
   activeId.value = s.id
   persist()
+  return s
 }
 
 /** 双击标题就地重命名 */
@@ -134,14 +225,16 @@ function renameSession(s) {
 }
 
 function selectSession(s) {
+  expandVisible.value = false
   activeId.value = s.id
-  if (s.providerId) {
-    providerId.value = s.providerId
-    model.value = s.model
+  selectedModels.value = validModels(sessionModels(s))
+  if (!selectedModels.value.length && providers.value[0]?.models?.length) {
+    selectedModels.value = [{ providerId: providers.value[0].id, model: providers.value[0].models[0] }]
   }
 }
 
 async function removeSession(s) {
+  if (streamingSessionId.value === s.id) await stop()
   sessions.value = sessions.value.filter((x) => x.id !== s.id)
   if (activeId.value === s.id) activeId.value = sessions.value[0]?.id || null
   await persist()
@@ -151,70 +244,106 @@ async function send() {
   if (streaming.value || requestPending.value) return
   const text = input.value.trim()
   if (!text) return
-  if (!activeProvider.value) {
-    ElMessage.warning('请先在「模型服务」中添加 Provider')
+  const models = validModels(selectedModels.value)
+  if (!models.length) {
+    ElMessage.warning('请先选择至少一个模型')
     return
   }
   if (editingIndex.value !== null) cancelEdit()
+  modelPickerOpen.value = false
   if (!activeSession.value) newSession()
 
   const s = activeSession.value
-  s.providerId = providerId.value
-  s.model = model.value
+  s.selectedModels = [...models]
   // 标题自动取用户第一句话
   if (s.title === '新对话') s.title = text.slice(0, 20)
-  s.messages.push({ role: 'user', content: text })
-  s.messages.push({ role: 'assistant', content: '', reasoning: '' })
+  const turnId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  s.messages.push({ role: 'user', content: text, turnId })
+  const replies = addReplies(s, models, turnId)
   input.value = ''
-  startCompletion(s)
+  startCompletion(s, replies)
 }
 
-// 基于会话现有消息（最后一条为用户新输入）向上游发起补全
-async function startCompletion(s) {
+function addReplies(s, models, turnId) {
+  return models.map((item, index) => {
+    const reply = {
+      role: 'assistant', providerId: item.providerId, model: item.model, turnId,
+      requestId: `${s.id}:${turnId}:${index}`, content: '', reasoning: '', status: 'pending'
+    }
+    s.messages.push(reply)
+    return reply
+  })
+}
+
+function historyFor(s, reply) {
+  return s.messages.filter((m) => m.role === 'user' || (
+    m.role === 'assistant' && m !== reply && m.content && (!m.status || m.status === 'done') &&
+    !m.content.startsWith('[错误]') &&
+    (m.providerId || s.providerId) === reply.providerId &&
+    (m.model || s.model) === reply.model
+  )).map((m) => ({ role: m.role, content: m.content }))
+}
+
+function finishRequest(s, reply) {
+  activeRequestIds.delete(reply.requestId)
+  if (!activeRequestIds.size) finishStreaming(s.id)
+}
+
+async function startCompletion(s, replies) {
   if (streaming.value || requestPending.value) return
   streaming.value = true
   streamingSessionId.value = s.id
   stopping.value = false
   requestPending.value = true
-
-  const requestProvider = providers.value.find((p) => p.id === s.providerId)
-  const requestModel = s.model || model.value
-  const payloadMessages = s.messages
-    .filter((m) => m.role !== 'assistant' || m.content)
-    .map((m) => ({ role: m.role, content: m.content }))
+  for (const reply of replies) activeRequestIds.add(reply.requestId)
 
   try {
     await persist()
     if (stopping.value) {
-      finishStreaming(s.id)
-      const last = s.messages[s.messages.length - 1]
-      if (last?.role === 'assistant' && !last.content && !last.reasoning) last.content = '（已停止）'
+      for (const reply of replies) {
+        reply.status = 'stopped'
+        reply.content = '（已停止）'
+        finishRequest(s, reply)
+      }
       await persist().catch(() => {})
       return
     }
-    scrollToBottom()
-    const res = await api.chatSend({
-      sessionId: s.id,
-      provider: requestProvider,
-      model: requestModel,
-      messages: payloadMessages,
-      thinkingLevel: thinkingLevel.value
-    })
-
-    // 主进程直接拒绝（如未配置 Key）时此前是静默失败，这里显式呈现
-    if (res && res.ok === false && finishStreaming(s.id)) {
-      const last = s.messages[s.messages.length - 1]
-      if (last?.role === 'assistant') last.content = `[错误] ${res.message}`
-      await persist().catch(() => {})
-    }
+    scrollToLatestTurn()
+    await Promise.all(replies.map(async (reply) => {
+      try {
+        const res = await api.chatSend({
+          sessionId: s.id,
+          requestId: reply.requestId,
+          provider: providers.value.find((p) => p.id === reply.providerId),
+          model: reply.model,
+          messages: historyFor(s, reply),
+          thinkingLevel: thinkingLevel.value
+        })
+        if ((!res || res.ok === false) && !['error', 'stopped'].includes(reply.status)) {
+          reply.status = 'error'
+          const message = res?.message || '请求未完成'
+          reply.content = reply.content ? `${reply.content}\n[错误] ${message}` : `[错误] ${message}`
+        }
+        // IPC 返回和流式事件来自不同通道；成功时由该请求的 done 事件收尾。
+        if (!res || res.ok === false) finishRequest(s, reply)
+      } catch (err) {
+        reply.status = 'error'
+        reply.content = `[错误] ${String(err)}`
+        finishRequest(s, reply)
+      } finally {
+        schedulePersist()
+      }
+    }))
   } catch (err) {
-    if (!finishStreaming(s.id)) return
-    const last = s.messages[s.messages.length - 1]
-    if (last?.role === 'assistant') last.content = `[错误] ${String(err)}`
-    await persist().catch(() => {})
+    for (const reply of replies) {
+      reply.status = 'error'
+      reply.content = `[错误] ${String(err)}`
+      finishRequest(s, reply)
+    }
     ElMessage.error({ message: `发送失败：${String(err)}`, duration: 10000 })
   } finally {
     requestPending.value = false
+    schedulePersist()
   }
 }
 
@@ -251,23 +380,27 @@ async function resendEdit() {
   if (!s || idx === null) return
   const text = editingText.value.trim()
   if (!text) return
-  s.providerId = providerId.value
-  s.model = model.value
+  const models = validModels(selectedModels.value)
+  if (!models.length) {
+    ElMessage.warning('请先选择至少一个模型')
+    return
+  }
+  s.selectedModels = [...models]
+  modelPickerOpen.value = false
   s.messages[idx].content = text
   s.messages.splice(idx + 1)
-  // 补回 assistant 占位：流式 chunk 只会追加到最后一条 assistant 消息上
-  s.messages.push({ role: 'assistant', content: '', reasoning: '' })
+  const turnId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  s.messages[idx].turnId = turnId
+  const replies = addReplies(s, models, turnId)
   cancelEdit()
-  startCompletion(s)
+  startCompletion(s, replies)
 }
 
 async function stop() {
-  // 停止"正在流式输出"的那个会话，而非当前选中的会话
-  const sid = streamingSessionId.value || activeSession.value?.id
-  if (!sid || stopping.value) return
+  if (!activeRequestIds.size || stopping.value) return
   stopping.value = true
   try {
-    await api.chatAbort(sid)
+    await Promise.all([...activeRequestIds].map((id) => api.chatAbort(id)))
   } catch (err) {
     stopping.value = false
     ElMessage.error({ message: `停止失败：${String(err)}`, duration: 10000 })
@@ -278,60 +411,67 @@ function useSuggestion(text) {
   input.value = text
 }
 
-async function scrollToBottom() {
+async function scrollToLatestTurn() {
   await nextTick()
-  if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+  const container = messagesEl.value
+  const turn = container?.querySelector('.chat-turn:last-child')
+  if (turn) container.scrollTop += turn.getBoundingClientRect().top - container.getBoundingClientRect().top
+}
+
+async function scrollReply(requestId) {
+  await nextTick()
+  const el = [...(messagesEl.value?.querySelectorAll('.answer-scroll') || [])]
+    .find((node) => node.dataset.requestId === requestId)
+  if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80) el.scrollTop = el.scrollHeight
 }
 
 function handleChunk(chunk) {
-  const { sessionId, type, delta, message } = chunk
+  const { sessionId, requestId, type, delta, message } = chunk
   if (sessionId !== streamingSessionId.value) return
   const s = sessions.value.find((x) => x.id === sessionId)
-  if (!s) {
-    if (type === 'error' || type === 'done') finishStreaming(sessionId)
-    return
-  }
-  const last = s.messages[s.messages.length - 1]
+  if (!s) return
+  const reply = requestId ? s.messages.find((m) => m.requestId === requestId) :
+    s.messages[s.messages.length - 1]
+  if (!reply || !activeRequestIds.has(reply.requestId)) return
   if (type === 'delta' && delta) {
-    if (last?.role === 'assistant') {
-      // 首条回答到达：关闭思考计时
-      if (last.reasoning && !last.reasoningElapsed) {
-        last.reasoningEndAt = Date.now()
-        if (last.reasoningStartAt) {
-          last.reasoningElapsed = Math.max(1, Math.round((last.reasoningEndAt - last.reasoningStartAt) / 1000))
+    if (reply.role === 'assistant') {
+      if (reply.reasoning && !reply.reasoningElapsed) {
+        reply.reasoningEndAt = Date.now()
+        if (reply.reasoningStartAt) {
+          reply.reasoningElapsed = Math.max(1, Math.round((reply.reasoningEndAt - reply.reasoningStartAt) / 1000))
         }
       }
-      last.content += delta
+      reply.status = 'streaming'
+      reply.content += delta
       schedulePersist()
-      scrollToBottom()
+      scrollReply(reply.requestId)
     }
   } else if (type === 'reasoning' && delta) {
-    // GLM / DeepSeek 等思考型模型先输出 reasoning_content
-    if (last?.role === 'assistant') {
-      if (!last.reasoningStartAt) last.reasoningStartAt = Date.now()
-      last.reasoning = (last.reasoning || '') + delta
+    if (reply.role === 'assistant') {
+      if (!reply.reasoningStartAt) reply.reasoningStartAt = Date.now()
+      reply.status = 'streaming'
+      reply.reasoning = (reply.reasoning || '') + delta
       schedulePersist()
-      scrollToBottom()
     }
   } else if (type === 'error') {
-    if (last?.role === 'assistant' && !last.content) last.content = `[错误] ${message}`
-    else s.messages.push({ role: 'assistant', content: `[错误] ${message}` })
-    finishStreaming(sessionId)
+    reply.status = 'error'
+    reply.content = reply.content ? `${reply.content}\n[错误] ${message}` : `[错误] ${message}`
+    finishRequest(s, reply)
     flushPersist()
   } else if (type === 'done') {
-    finishStreaming(sessionId)
-    if (last?.role === 'assistant') {
-      if (last.reasoning && !last.reasoningEndAt) {
-        last.reasoningEndAt = Date.now()
-        if (last.reasoningStartAt) {
-          last.reasoningElapsed = Math.max(1, Math.round((last.reasoningEndAt - last.reasoningStartAt) / 1000))
+    if (reply.role === 'assistant') {
+      if (reply.reasoning && !reply.reasoningEndAt) {
+        reply.reasoningEndAt = Date.now()
+        if (reply.reasoningStartAt) {
+          reply.reasoningElapsed = Math.max(1, Math.round((reply.reasoningEndAt - reply.reasoningStartAt) / 1000))
         }
       }
-      if (!last.content && !last.reasoning) {
-        // 中止且未收到任何内容时标记为已停止
-        last.content = chunk.aborted ? '（已停止）' : '（空响应，请检查 Provider 与模型配置）'
+      reply.status = chunk.aborted ? 'stopped' : 'done'
+      if (!reply.content) {
+        reply.content = chunk.aborted ? '（已停止）' : '（空响应，请检查 Provider 与模型配置）'
       }
     }
+    finishRequest(s, reply)
     flushPersist()
   }
 }
@@ -351,7 +491,11 @@ onActivated(() => {
   if (initialized) refreshProviders()
 })
 
-onDeactivated(flushPersist)
+onDeactivated(() => {
+  modelPickerOpen.value = false
+  expandVisible.value = false
+  flushPersist()
+})
 
 onUnmounted(() => {
   unsubscribe?.()
@@ -383,32 +527,44 @@ onUnmounted(() => {
     <!-- 对话主区 -->
     <div class="chat-main">
       <div class="chat-toolbar">
-        <el-select v-model="providerId" placeholder="选择 Provider" style="width: 180px" size="default"
-          @change="(v) => { model = providers.find((p) => p.id === v)?.models?.[0] || '' }">
-          <el-option v-for="p in providers" :key="p.id" :label="p.name" :value="p.id" />
-        </el-select>
-        <el-select v-model="model" placeholder="选择模型" style="width: 240px">
-          <el-option v-for="m in activeProvider?.models || []" :key="m" :label="m" :value="m" />
-        </el-select>
-        <el-select v-model="thinkingLevel" style="width: 130px" @change="setThinkingLevel">
+        <el-popover v-model:visible="modelPickerOpen" placement="bottom-start" :width="400" trigger="click" popper-class="model-picker-popper">
+          <template #reference>
+            <button class="model-selector" type="button" :disabled="streaming || requestPending" :aria-label="`选择模型，最多 ${MAX_MODELS} 个`">
+              <span class="selector-label">选择模型</span>
+              <span class="selected-models">
+                <span v-for="item in selectedModels" :key="modelKey(item)" class="selected-model-chip" :title="`${providerName(item.providerId)} · ${item.model}`">{{ item.model }}</span>
+                <span v-if="!selectedModels.length" class="selector-placeholder">请选择模型</span>
+              </span>
+              <span class="model-count">已选 {{ selectedModels.length }}/{{ MAX_MODELS }}</span>
+            </button>
+          </template>
+          <div class="model-picker">
+            <el-input v-model="modelSearch" placeholder="搜索 Provider 或模型" clearable aria-label="搜索模型" />
+            <div class="model-picker-list">
+              <div v-for="group in availableModels" :key="group.id" class="model-group">
+                <div class="model-group-name">{{ group.name }}</div>
+                <el-checkbox v-for="name in group.visibleModels" :key="name"
+                  :model-value="isSelected(group.id, name)"
+                  :disabled="(streaming || requestPending) || (!isSelected(group.id, name) && selectedModels.length >= MAX_MODELS)"
+                  @change="(checked) => toggleModel(group.id, name, checked)">{{ name }}</el-checkbox>
+              </div>
+              <div v-if="!availableModels.length" class="picker-empty">没有匹配的模型，请先到「模型服务」配置</div>
+            </div>
+            <div class="picker-foot">滚动查看更多 · 最多选择 {{ MAX_MODELS }} 个模型</div>
+          </div>
+        </el-popover>
+        <el-select v-model="thinkingLevel" class="thinking-select" @change="setThinkingLevel">
           <el-option v-for="t in thinkingOptions" :key="t.value" :label="t.label" :value="t.value" />
         </el-select>
       </div>
 
       <div ref="messagesEl" class="messages">
-        <div v-if="activeSession" class="messages-col">
-          <div v-for="(m, i) in activeSession.messages" :key="i" class="msg" :class="m.role">
-            <OhLogo v-if="m.role === 'assistant'" :size="30" class="msg-avatar assistant" />
-            <div v-else class="msg-avatar user">你</div>
-            <div class="msg-body">
-              <div v-if="m.reasoning" class="msg-reasoning" :class="{ open: !!openReasonings[i] }">
-                <button class="reasoning-head" type="button" @click="toggleReasoning(i)">
-                  <span class="reasoning-label">{{ reasoningTitle(m, i) }}</span>
-                  <el-icon class="chev" :size="12"><ArrowDown /></el-icon>
-                </button>
-                <div v-show="openReasonings[i]" class="reasoning-text">{{ m.reasoning }}</div>
-              </div>
-              <div v-if="m.role === 'user' && editingIndex === i" class="edit-box">
+        <div v-if="activeTurns.length" class="messages-col">
+          <div v-for="(turn, turnIndex) in activeTurns" :key="turn.user.turnId || turnIndex" class="chat-turn">
+            <div class="turn-user">
+              <div class="msg-avatar user">你</div>
+              <div class="user-content">
+                <div v-if="editingIndex === turn.userIndex" class="edit-box">
                 <el-input
                   v-model="editingText"
                   type="textarea"
@@ -420,26 +576,53 @@ onUnmounted(() => {
                   <el-button size="small" @click="cancelEdit">取消</el-button>
                   <el-button size="small" type="primary" :icon="Promotion" @click="resendEdit">发送</el-button>
                 </div>
-              </div>
-              <template v-else>
-                <div class="msg-content">{{ m.content }}<span
-                    v-if="streamingSessionId === activeSession.id && m.role === 'assistant' && i === activeSession.messages.length - 1"
-                    class="caret"
-                  /></div>
-                <div
-                  v-if="m.role === 'user' && !streaming && editingIndex === null"
-                  class="msg-actions"
-                >
-                  <el-button size="small" text :icon="EditPen" @click="startEdit(i)">编辑</el-button>
                 </div>
-              </template>
+                <template v-else>
+                  <div class="user-bubble">{{ turn.user.content }}</div>
+                  <div v-if="!streaming && editingIndex === null" class="msg-actions">
+                    <el-button size="small" text :icon="EditPen" @click="startEdit(turn.userIndex)">编辑</el-button>
+                  </div>
+                </template>
+              </div>
+            </div>
+            <div class="answer-grid">
+              <article v-for="(reply, replyIndex) in turn.replies" :key="reply.requestId || replyIndex" class="answer-card">
+                <div class="answer-head">
+                  <span class="answer-avatar">AI</span>
+                  <div class="answer-identity">
+                    <strong :title="reply.model || activeSession.model">{{ reply.model || activeSession.model || '模型回答' }}</strong>
+                    <span>{{ providerName(reply.providerId || activeSession.providerId) }}</span>
+                  </div>
+                  <div class="answer-actions">
+                    <button class="answer-action" type="button" title="复制回答" :aria-label="`复制 ${reply.model || '模型'} 的回答`" :disabled="!reply.content" @click="copyReply(reply)">
+                      <el-icon :size="15"><CopyDocument /></el-icon>
+                    </button>
+                    <button class="answer-action" type="button" title="展开回答" :aria-label="`展开 ${reply.model || '模型'} 的回答`" @click="expandReply(reply)">
+                      <el-icon :size="15"><FullScreen /></el-icon>
+                    </button>
+                  </div>
+                </div>
+                <div class="answer-status" :class="reply.status || 'done'">
+                  {{ reply.status === 'pending' ? '等待回答' : reply.status === 'streaming' ? '回答中' : reply.status === 'error' ? '回答失败' : reply.status === 'stopped' ? '已停止' : '回答完成' }}
+                </div>
+                <div class="answer-scroll" tabindex="0" :data-request-id="reply.requestId" :aria-label="`${reply.model || activeSession.model || '模型'}的回答，可滚动查看`">
+                  <div v-if="reply.reasoning" class="msg-reasoning" :class="{ open: !!openReasonings[reply.requestId || `${turnIndex}-${replyIndex}`] }">
+                    <button class="reasoning-head" type="button" @click="toggleReasoning(reply.requestId || `${turnIndex}-${replyIndex}`)">
+                      <span class="reasoning-label">{{ reasoningTitle(reply) }}</span>
+                      <span class="chev">⌄</span>
+                    </button>
+                    <div v-show="openReasonings[reply.requestId || `${turnIndex}-${replyIndex}`]" class="reasoning-text">{{ reply.reasoning }}</div>
+                  </div>
+                  <div class="answer-content">{{ reply.content || '正在等待模型回答…' }}<span v-if="['pending', 'streaming'].includes(reply.status) && reply.content" class="caret" /></div>
+                </div>
+              </article>
             </div>
           </div>
         </div>
         <div v-else class="welcome">
           <OhLogo :size="52" class="welcome-mark" />
           <h2 class="welcome-title">开始一段新对话</h2>
-          <p class="welcome-sub">选择上方的 Provider 与模型，或从这些问题开始：</p>
+          <p class="welcome-sub">选择最多 {{ MAX_MODELS }} 个模型，输入一句话即可并排比较回答。</p>
           <div class="welcome-chips">
             <button v-for="q in suggestions" :key="q" class="chip" type="button" @click="useSuggestion(q)">
               {{ q }}
@@ -456,17 +639,22 @@ onUnmounted(() => {
               type="textarea"
               :rows="3"
               resize="none"
-              placeholder="输入消息…"
+              :placeholder="selectedModels.length ? `发送给 ${selectedModels.length} 个模型…` : '先选择模型，再输入消息…'"
               @keydown.enter.exact.prevent="send"
             />
             <div class="input-foot">
               <span class="input-hint">Enter 发送 / Shift+Enter 换行</span>
               <el-button v-if="streaming" :icon="VideoPause" :loading="stopping" @click="stop">停止</el-button>
-              <el-button v-else type="primary" :icon="Promotion" @click="send">发送</el-button>
+              <el-button v-else type="primary" :icon="Promotion" :disabled="!selectedModels.length || requestPending" @click="send">发送给 {{ selectedModels.length }} 个模型</el-button>
             </div>
           </div>
         </div>
       </div>
+      <el-dialog v-model="expandVisible" class="answer-dialog" :title="expandedReply?.model || activeSession?.model || '模型回答'"
+        width="min(900px, calc(100vw - 32px))" align-center @closed="expandedReply = null">
+        <div class="expanded-provider">{{ providerName(expandedReply?.providerId || activeSession?.providerId) }}</div>
+        <div class="expanded-answer" v-html="expandedHtml"></div>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -478,7 +666,7 @@ onUnmounted(() => {
 }
 
 .session-panel {
-  width: 112px;
+  width: clamp(100px, 12vw, 160px);
   flex-shrink: 0;
   padding: 44px 6px 14px;
   display: flex;
@@ -564,9 +752,66 @@ onUnmounted(() => {
 
 .chat-toolbar {
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 10px;
   padding: 42px 24px 10px;
 }
+
+.model-selector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(700px, 100%);
+  min-height: 36px;
+  padding: 5px 10px;
+  border: 1px solid var(--oh-border);
+  border-radius: var(--oh-radius-sm);
+  background: var(--oh-bg-card);
+  color: var(--oh-text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover, &:focus-visible { border-color: var(--oh-primary); }
+  &:disabled { opacity: 0.65; cursor: not-allowed; }
+}
+
+.selector-label { flex: none; font-weight: 600; }
+.selected-models { display: flex; flex: 1; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.selected-model-chip {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--oh-primary-soft);
+  color: var(--oh-primary);
+  font-size: 12px;
+}
+.selector-placeholder { color: var(--oh-text-dim); }
+.model-count { flex: none; color: var(--oh-text-dim); font-size: 12px; }
+.thinking-select { width: 130px; flex: none; }
+.model-picker { min-width: 0; }
+:global(.model-picker-popper.el-popover) { border-radius: var(--oh-radius-lg); }
+.model-picker-list {
+  max-height: min(220px, 45vh);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding-top: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--oh-border-strong) transparent;
+
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-thumb { background: var(--oh-border-strong); border-radius: 6px; }
+}
+.model-group { display: flex; flex-direction: column; padding: 7px 2px; border-bottom: 1px solid var(--oh-border); }
+.model-group-name { margin-bottom: 4px; color: var(--oh-text-dim); font-size: 12px; font-weight: 600; }
+.model-group :deep(.el-checkbox) { margin-right: 0; min-height: 30px; }
+.model-group :deep(.el-checkbox__label) { overflow: hidden; text-overflow: ellipsis; }
+.picker-empty { padding: 18px 2px; color: var(--oh-text-dim); font-size: 12px; }
+.picker-foot { padding-top: 9px; color: var(--oh-text-dim); font-size: 12px; }
 
 .messages {
   flex: 1;
@@ -575,40 +820,99 @@ onUnmounted(() => {
 }
 
 .messages-col {
-  max-width: 860px;
+  max-width: 1680px;
   margin: 0 auto;
 }
 
-.msg {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 24px;
-  animation: msg-in 0.28s var(--oh-ease);
-
-  &.user {
-    flex-direction: row-reverse;
-
-    .msg-body {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-    }
-
-    .msg-content {
-      background: var(--oh-primary-soft);
-      border: 1px solid var(--oh-border);
-      padding: 10px 14px;
-      border-radius: 12px;
-      max-width: 80%;
-    }
-  }
+.chat-turn { margin-bottom: 30px; }
+.turn-user { display: flex; flex-direction: row-reverse; align-items: flex-start; gap: 10px; margin-bottom: 14px; }
+.user-content { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; flex: 1; }
+.user-bubble {
+  max-width: min(80%, 720px);
+  padding: 10px 14px;
+  border: 1px solid var(--oh-border);
+  border-radius: 12px;
+  background: var(--oh-primary-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
 }
+.answer-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+.answer-card {
+  display: flex;
+  flex: 0 1 320px;
+  flex-direction: column;
+  width: min(100%, 320px);
+  height: 320px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--oh-border);
+  border-radius: var(--oh-radius-lg);
+}
+.answer-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.answer-avatar {
+  width: 30px; height: 30px; display: grid; place-items: center; flex: none;
+  border-radius: 8px; background: var(--oh-primary-soft); color: var(--oh-primary);
+  font-size: 11px; font-weight: 700;
+}
+.answer-identity { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.answer-identity strong, .answer-identity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.answer-identity strong { font-size: 13px; }
+.answer-identity span { color: var(--oh-text-dim); font-size: 11px; }
+.answer-actions { display: flex; gap: 2px; margin-left: auto; flex: none; }
+.answer-action {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--oh-radius-sm);
+  background: transparent;
+  color: var(--oh-text-dim);
+  cursor: pointer;
 
-@keyframes msg-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
+  &:hover, &:focus-visible { background: var(--oh-hover); color: var(--oh-primary); }
+  &:disabled { opacity: 0.4; cursor: default; }
+}
+.answer-status { margin: 12px 0; color: var(--oh-text-dim); font-size: 11px; }
+.answer-status.streaming { color: var(--oh-primary); }
+.answer-status.error { color: var(--oh-danger); }
+.answer-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--oh-border-strong) transparent;
+
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-thumb { background: var(--oh-border-strong); border-radius: 6px; }
+}
+.answer-content { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; }
+.expanded-provider { margin-bottom: 10px; color: var(--oh-text-dim); font-size: 12px; }
+.expanded-answer {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  line-height: 1.75;
+  scrollbar-width: thin;
+  scrollbar-color: var(--oh-border-strong) transparent;
+
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-thumb { background: var(--oh-border-strong); border-radius: 6px; }
+  :deep(> :first-child) { margin-top: 0; }
+  :deep(> :last-child) { margin-bottom: 0; }
+  :deep(h1), :deep(h2), :deep(h3) { margin: 20px 0 8px; line-height: 1.3; }
+  :deep(p), :deep(ul), :deep(ol), :deep(pre), :deep(blockquote) { margin: 0 0 12px; }
+  :deep(ul), :deep(ol) { padding-left: 24px; }
+  :deep(a) { color: var(--oh-primary); }
+  :deep(code) { padding: 1px 4px; border-radius: 4px; background: var(--oh-bg-input); }
+  :deep(pre) { overflow-x: auto; padding: 12px; border-radius: 8px; background: var(--oh-bg-input); }
+  :deep(pre code) { padding: 0; background: none; }
+  :deep(blockquote) { padding-left: 12px; border-left: 3px solid var(--oh-border-strong); color: var(--oh-text-2); }
+  :deep(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin-bottom: 12px; }
+  :deep(th), :deep(td) { padding: 6px 10px; border: 1px solid var(--oh-border); }
 }
 
 .msg-avatar {
@@ -622,22 +926,11 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 700;
 
-  &.assistant {
-    background: var(--oh-primary);
-    color: #fff;
-  }
-
   &.user {
     background: var(--oh-bg-input);
     border: 1px solid var(--oh-border);
     color: var(--oh-text-2);
   }
-}
-
-.msg-body {
-  flex: 1;
-  min-width: 0;
-  padding-top: 4px;
 }
 
 .msg-actions {
@@ -654,13 +947,8 @@ onUnmounted(() => {
   }
 }
 
-.msg:hover .msg-actions {
+.turn-user:hover .msg-actions, .turn-user:focus-within .msg-actions {
   opacity: 1;
-}
-
-.msg.user .msg-actions {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .edit-box {
@@ -679,13 +967,6 @@ onUnmounted(() => {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
-}
-
-.msg-content {
-  font-size: 14px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .msg-reasoning {
@@ -814,7 +1095,7 @@ onUnmounted(() => {
 }
 
 .input-col {
-  max-width: 860px;
+  max-width: 1680px;
   margin: 0 auto;
 }
 
@@ -850,5 +1131,23 @@ onUnmounted(() => {
 .input-hint {
   font-size: 12px;
   color: var(--oh-text-dim);
+}
+
+@media (max-width: 1080px) {
+  .chat-toolbar { padding-left: 16px; padding-right: 16px; }
+  .messages { padding-left: 16px; padding-right: 16px; }
+  .input-area { padding-left: 16px; padding-right: 16px; }
+  .session-panel { width: 100px; }
+}
+
+@media (max-width: 700px) {
+  .session-panel { width: 86px; }
+  .chat-toolbar { padding-left: 10px; padding-right: 10px; }
+  .messages { padding-left: 10px; padding-right: 10px; }
+  .input-area { padding-left: 10px; padding-right: 10px; }
+  .model-selector { gap: 6px; }
+  .selector-label { display: none; }
+  .input-foot { gap: 8px; }
+  .input-hint { display: none; }
 }
 </style>

@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
   providerListModels: (payload) => invoke('provider:listModels', payload),
 
   /* 对话 */
+  copyText: (text) => invoke('clipboard:writeText', text),
   chatSend: (payload) => invoke('chat:send', payload),
   chatAbort: (sessionId) => invoke('chat:abort', sessionId),
   onChatChunk: (cb) => {

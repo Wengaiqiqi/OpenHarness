@@ -20,6 +20,7 @@
     "@xterm/xterm": "^6.0.0",
     "electron-store": "^8.2.0",
     "js-yaml": "^5.4.1",
+    "markdown-it": "^14.3.2",
     "node-pty": "^1.1.0",
     "smol-toml": "^1.8.0"
   },

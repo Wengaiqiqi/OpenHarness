@@ -3,9 +3,10 @@
  * 支持 openai-compatible（含火山方舟 Ark）、openai-responses 与 anthropic 协议
  */
 export function createChatService() {
-  const controllers = new Map() // sessionId -> AbortController
+  const controllers = new Map() // requestId -> AbortController
 
-  async function send(win, { sessionId, provider, model, messages, thinkingLevel = 'medium' }) {
+  async function send(win, { sessionId, requestId = sessionId, provider, model, messages, thinkingLevel = 'medium' }) {
+    const emit = (chunk) => pushChunk(win, sessionId, { requestId, ...chunk })
     if (!provider || !provider.baseUrl || !provider.apiKey) {
       return { ok: false, message: '请先在「模型服务」中配置 Provider 与 API Key' }
     }
@@ -14,11 +15,11 @@ export function createChatService() {
 
     if (type === 'bedrock') {
       const msg = 'Amazon Bedrock 暂未支持：需要 AWS SigV4 签名，请通过 OpenAI Compatible 网关接入'
-      pushChunk(win, sessionId, { type: 'error', message: msg })
+      emit({ type: 'error', message: msg })
       return { ok: false, message: msg }
     }
 
-    if (controllers.has(sessionId)) {
+    if (controllers.has(requestId)) {
       return { ok: false, message: '该对话正在生成，请先停止或等待完成' }
     }
 
@@ -31,7 +32,7 @@ export function createChatService() {
     let usedIdx = 0
 
     const controller = new AbortController()
-    controllers.set(sessionId, controller)
+    controllers.set(requestId, controller)
     let reader = null
     let watchdog = null
     let timedOut = false
@@ -85,7 +86,7 @@ export function createChatService() {
 
       if (!res.ok) {
         const text = await res.text().catch(() => '')
-        pushChunk(win, sessionId, { type: 'error', message: `HTTP ${res.status}: ${text.slice(0, 500)}` })
+        emit({ type: 'error', message: `HTTP ${res.status}: ${text.slice(0, 500)}` })
         return { ok: false, message: `HTTP ${res.status}` }
       }
 
@@ -111,7 +112,7 @@ export function createChatService() {
           if (!line.startsWith('data:')) continue
           const payload = line.slice(5).trim()
           if (payload === '[DONE]') {
-            pushChunk(win, sessionId, { type: 'done' })
+            emit({ type: 'done' })
             return { ok: true }
           }
           let json
@@ -121,11 +122,11 @@ export function createChatService() {
               json.response?.incomplete_details?.reason || '上游未完成响应')
           }
           if (['message_stop', 'response.completed'].includes(json.type)) {
-            pushChunk(win, sessionId, { type: 'done' })
+            emit({ type: 'done' })
             return { ok: true }
           }
           const delta = extractDelta(type, json)
-          if (delta) pushChunk(win, sessionId, delta)
+          if (delta) emit(delta)
         }
       }
 
@@ -133,14 +134,14 @@ export function createChatService() {
     } catch (err) {
       if (timedOut) {
         const msg = '上游 90 秒未返回任何数据，已中止（请检查网络或系统代理）'
-        pushChunk(win, sessionId, { type: 'error', message: msg })
+        emit({ type: 'error', message: msg })
         return { ok: false, message: msg }
       }
       if (err.name === 'AbortError') {
-        pushChunk(win, sessionId, { type: 'done', aborted: true })
+        emit({ type: 'done', aborted: true })
         return { ok: true, aborted: true }
       }
-      pushChunk(win, sessionId, { type: 'error', message: String(err) })
+      emit({ type: 'error', message: String(err) })
       return { ok: false, message: String(err) }
     } finally {
       clearTimeout(watchdog)
@@ -148,12 +149,12 @@ export function createChatService() {
         await reader.cancel().catch(() => {})
         try { reader.releaseLock() } catch {}
       }
-      if (controllers.get(sessionId) === controller) controllers.delete(sessionId)
+      if (controllers.get(requestId) === controller) controllers.delete(requestId)
     }
   }
 
-  function abort(sessionId) {
-    const c = controllers.get(sessionId)
+  function abort(requestId) {
+    const c = controllers.get(requestId)
     if (c) c.abort()
   }
 
