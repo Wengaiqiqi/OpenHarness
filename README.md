@@ -2,6 +2,8 @@
 
 桌面级 Agent Harness 统一集成服务,把散落在本机的各类桌面 AI Agent（Harness）聚合到一个入口统一管理。
 
+https://github.com/user-attachments/assets/145f99d1-6ffa-4edf-ba2a-cbbfbb211814
+
 ## 功能
 
 - **Harness 管理**：检测 Claude Desktop / Claude Code / Codex / Cursor / Windsurf / Trae / OpenClaw 等 Harness；启动、配置模型与 MCP 注入能力按各适配器显示
