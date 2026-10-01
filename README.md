@@ -2,7 +2,7 @@
 
 桌面级 Agent Harness 统一集成服务,把散落在本机的各类桌面 AI Agent（Harness）聚合到一个入口统一管理。
 
-https://github.com/user-attachments/assets/145f99d1-6ffa-4edf-ba2a-cbbfbb211814
+https://github.com/user-attachments/assets/e09ed19b-2022-4435-8ca8-2f2bf976fa09
 
 ## 功能
 
