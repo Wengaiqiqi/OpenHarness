@@ -23,9 +23,6 @@ const prime_agent = {
   configPath() {
     return firstExists(this.configCandidates) || this.configCandidates[0]
   },
-  async launch() {
-    return { ok: false, message: 'Prime Agent 为 CLI 工具，请在终端中启动' }
-  },
   async configureModel({ models, model, token }) {
     return mergeJsonAgentProviders(this.configPath(), { models, model, token })
   }

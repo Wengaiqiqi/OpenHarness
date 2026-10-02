@@ -95,12 +95,46 @@ app.whenReady().then(async () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   assert.equal(data.sessions[0]?.messages.at(-1).content, '# SMOKE_OK')
+  for (const [width, height, zoom] of [[1280, 820, 1], [1920, 1080, 1], [640, 600, 1], [960, 600, 1.25]]) {
+    win.setContentSize(width, height)
+    win.webContents.setZoomFactor(zoom)
+    await new Promise(resolve => setTimeout(resolve, 150))
+    for (const count of [1, 2, 6]) {
+      const fit = await win.webContents.executeJavaScript(`(() => {
+        const grid = document.querySelector('.answer-grid'), card = grid.firstElementChild
+        const content = card.querySelector('.answer-content'), original = content.textContent
+        content.textContent = 'Long reply layout check\\n'.repeat(40)
+        grid.replaceChildren(card, ...Array.from({ length: ${count} - 1 }, () => card.cloneNode(true)))
+        const bounds = grid.getBoundingClientRect()
+        const rects = [...grid.children].map(item => item.getBoundingClientRect())
+        const firstRow = rects.filter(r => Math.abs(r.top - rects[0].top) < 1)
+        const scroll = card.querySelector('.answer-scroll'), style = getComputedStyle(card)
+        const result = {
+          fillsRow: Math.abs(firstRow[0].left - bounds.left) < 1 && Math.abs(firstRow.at(-1).right - bounds.right) < 1,
+          uniform: rects.every(r => Math.abs(r.width - rects[0].width) < 1),
+          bounded: rects.every(r => r.left >= bounds.left - 1 && r.right <= bounds.right + 1),
+          noOverflow: grid.scrollWidth <= grid.clientWidth + 1,
+          pairFits: ${count} !== 2 || bounds.width < 652 || firstRow.length === 2,
+          presentation: ${count} === 1
+            ? style.borderTopWidth === '0px' && rects[0].height > 320 && scroll.scrollHeight <= scroll.clientHeight + 1
+            : style.borderTopWidth === '1px' && rects.every(r => Math.abs(r.height - 320) < 1)
+        }
+        content.textContent = original
+        return result
+      })()`)
+      assert.ok(fit.fillsRow && fit.uniform && fit.bounded && fit.noOverflow && fit.pairFits && fit.presentation,
+        JSON.stringify({ width, height, zoom, count, ...fit }))
+    }
+  }
+  await win.webContents.executeJavaScript("const grid = document.querySelector('.answer-grid'); grid.replaceChildren(grid.firstElementChild)")
+  win.webContents.setZoomFactor(1)
+  win.setContentSize(1280, 820)
   const actionPlacement = await win.webContents.executeJavaScript(`(() => {
     const card = document.querySelector('.answer-card').getBoundingClientRect()
     const actions = document.querySelector('.answer-actions').getBoundingClientRect()
     return { rightInset: card.right - actions.right, topInset: actions.top - card.top }
   })()`)
-  assert.ok(actionPlacement.rightInset >= 10 && actionPlacement.rightInset <= 24 && actionPlacement.topInset <= 24,
+  assert.ok(Math.abs(actionPlacement.rightInset) < 1 && actionPlacement.topInset <= 4,
     JSON.stringify(actionPlacement))
   await win.webContents.executeJavaScript("document.querySelector('.answer-action[title=\"复制回答\"]').click()")
   for (let n = 0; n < 50 && copied !== '# SMOKE_OK'; n++) await new Promise((resolve) => setTimeout(resolve, 100))
@@ -214,6 +248,7 @@ app.whenReady().then(async () => {
   await clickText('导入 Skill')
   await waitFor("!!document.querySelector('[aria-label=\"选择目标 Harness\"]')")
   await waitFor("!!document.querySelector('.harness-target-dialog .target-card-icon')")
+  await waitFor("getComputedStyle(document.querySelector('.skills-page')).transform === 'none'")
   const targetDialog = await win.webContents.executeJavaScript(`(() => {
     const dialog = document.querySelector('.harness-target-dialog')
     const rect = dialog?.getBoundingClientRect()

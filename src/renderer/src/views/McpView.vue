@@ -273,13 +273,6 @@ onMounted(load)
 </template>
 
 <style scoped lang="scss">
-.page-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-
 .head-actions {
   display: flex;
   gap: 10px;

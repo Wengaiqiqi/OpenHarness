@@ -228,13 +228,6 @@ onMounted(load)
 </template>
 
 <style scoped lang="scss">
-.page-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-
 .provider-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

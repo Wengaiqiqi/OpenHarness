@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 // renderer/api.js 在跨 contextBridge 前已剥离 Vue Proxy，这里直接调用 IPC。
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args)
+const subscribe = (channel, cb) => {
+  const handler = (_e, payload) => cb(payload)
+  ipcRenderer.on(channel, handler)
+  return () => ipcRenderer.removeListener(channel, handler)
+}
 
 contextBridge.exposeInMainWorld('api', {
   /* 应用 */
@@ -48,11 +53,7 @@ contextBridge.exposeInMainWorld('api', {
   copyText: (text) => invoke('clipboard:writeText', text),
   chatSend: (payload) => invoke('chat:send', payload),
   chatAbort: (sessionId) => invoke('chat:abort', sessionId),
-  onChatChunk: (cb) => {
-    const handler = (_e, payload) => cb(payload)
-    ipcRenderer.on('chat:chunk', handler)
-    return () => ipcRenderer.removeListener('chat:chunk', handler)
-  },
+  onChatChunk: (cb) => subscribe('chat:chunk', cb),
 
   /* 应用内嵌 */
   embedOpen: (id, rect) => invoke('embed:open', id, rect),
@@ -66,19 +67,7 @@ contextBridge.exposeInMainWorld('api', {
   ptyResize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
   ptyBuffer: (id, afterOffset = 0) => invoke('pty:buffer', id, afterOffset),
   ptyClose: (id) => invoke('pty:close', id),
-  onPtyData: (cb) => {
-    const handler = (_e, payload) => cb(payload)
-    ipcRenderer.on('pty:data', handler)
-    return () => ipcRenderer.removeListener('pty:data', handler)
-  },
-  onPtyExit: (cb) => {
-    const handler = (_e, payload) => cb(payload)
-    ipcRenderer.on('pty:exit', handler)
-    return () => ipcRenderer.removeListener('pty:exit', handler)
-  },
-  onHarnessUpdated: (cb) => {
-    const handler = (_e, payload) => cb(payload)
-    ipcRenderer.on('harness:updated', handler)
-    return () => ipcRenderer.removeListener('harness:updated', handler)
-  }
+  onPtyData: (cb) => subscribe('pty:data', cb),
+  onPtyExit: (cb) => subscribe('pty:exit', cb),
+  onHarnessUpdated: (cb) => subscribe('harness:updated', cb)
 })

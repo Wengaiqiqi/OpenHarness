@@ -1,4 +1,4 @@
-import { LOCALAPPDATA, firstExists, injectMcpIntoFile, launchExe } from './base.js'
+import { LOCALAPPDATA, firstExists, injectMcpIntoFile } from './base.js'
 
 const claudeDesktop = {
   id: 'claude-desktop',
@@ -24,11 +24,6 @@ const claudeDesktop = {
   },
   configPath() {
     return firstExists(this.configCandidates)
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 Claude Desktop' }
-    return launchExe(exe)
   },
   async injectMcp(servers) {
     const configPath = firstExists(this.configCandidates) || this.configCandidates[0]

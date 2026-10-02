@@ -1,4 +1,4 @@
-import { LOCALAPPDATA, USERPROFILE, injectMcpIntoFile, launchExe, firstExists } from './base.js'
+import { LOCALAPPDATA, USERPROFILE, injectMcpIntoFile, firstExists } from './base.js'
 
 const windsurf = {
   id: 'windsurf',
@@ -17,11 +17,6 @@ const windsurf = {
   },
   configPath() {
     return firstExists(this.configCandidates) || this.configCandidates[0]
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 Windsurf' }
-    return launchExe(exe)
   },
   async injectMcp(servers) {
     return injectMcpIntoFile(this.configPath(), servers, 'mcpServers')

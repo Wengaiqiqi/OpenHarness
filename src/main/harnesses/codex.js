@@ -1,4 +1,4 @@
-import { APPDATA, USERPROFILE, exists, firstExists, launchExe, commandExists } from './base.js'
+import { APPDATA, USERPROFILE, exists, firstExists, commandExists } from './base.js'
 import path from 'node:path'
 import { mergeTomlProvider } from './agent-config.js'
 
@@ -43,11 +43,6 @@ const codex = {
   },
   configPath() {
     return firstExists(this.configCandidates) || path.join(`${USERPROFILE}\\.codex`, 'config.toml')
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 Codex（可通过 npm i -g @openai/codex 安装）' }
-    return launchExe(exe)
   },
   /** 模型注入：config.toml 的 model_provider 指向本地代理（wire_api=chat） */
   async configureModel({ models, model, token }) {

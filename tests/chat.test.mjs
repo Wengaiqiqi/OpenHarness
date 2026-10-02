@@ -10,6 +10,62 @@ function windowMock() {
   return { chunks, isDestroyed: () => false, webContents: { send: (_channel, chunk) => chunks.push(chunk) } }
 }
 
+test('thinking uses native effort and server defaults without fixed token budgets', async () => {
+  for (const [type, model, level, expected, rejected = 0, info = null] of [
+    ['openai-compatible', 'qwen-plus', 'low', { enable_thinking: true }],
+    ['openai-compatible', 'qwen-plus', 'medium', { enable_thinking: true }],
+    ['openai-compatible', 'qwen-plus', 'high', { enable_thinking: true }],
+    ['openai-compatible', 'qwen-plus', 'off', { enable_thinking: false }],
+    ['openai-compatible', 'qwen-plus', 'medium', {}, 1],
+    ['openai-compatible', 'qwen3.8-omni-flash', 'high', { reasoning_effort: 'high' }],
+    ['openai-compatible', 'qwen3.8-omni-flash', 'off', { reasoning_effort: 'none' }],
+    ['openai-compatible', 'glm-unknown', 'medium', {}, 2],
+    ['openai-compatible', 'deepseek-reasoner', 'high', {}],
+    ['openai-responses', 'gpt-demo', 'medium', { reasoning: { effort: 'medium' } }],
+    ['anthropic', 'vendor/claude-adaptive', 'high', {
+      max_tokens: 64000, thinking: { type: 'adaptive' }, output_config: { effort: 'high' }
+    }, 0, { max_tokens: 64000 }],
+    ['anthropic', 'claude-adaptive', 'medium', {
+      max_tokens: 96000, thinking: { type: 'adaptive' }
+    }, 1, { max_tokens: 96000 }],
+    ['anthropic', 'claude-effort-only', 'low', {
+      max_tokens: 128000, output_config: { effort: 'low' }
+    }, 2, { max_tokens: 128000 }],
+    ['anthropic', 'claude-legacy', 'medium', { max_tokens: 64000 }, 3, { max_tokens: 64000 }],
+    ['anthropic', 'claude-no-thinking', 'high', { max_tokens: 64000 }, 0, {
+      max_tokens: 64000, capabilities: { thinking: { supported: false } }
+    }],
+    ['anthropic', 'claude-gateway-defaults', 'medium', {
+      thinking: { type: 'adaptive' }, output_config: { effort: 'medium' }
+    }],
+    ['anthropic', 'claude-adaptive', 'off', { max_tokens: 64000, thinking: { type: 'disabled' } }, 0, { max_tokens: 64000 }]
+  ]) {
+    const bodies = []
+    const lookups = []
+    globalThis.fetch = async (url, options) => {
+      if (options.method !== 'POST') {
+        lookups.push(url)
+        assert.equal(options.headers['x-api-key'], provider.apiKey)
+        return info ? Response.json(info) : new Response('not found', { status: 404 })
+      }
+      const body = JSON.parse(options.body)
+      bodies.push(body)
+      assert.equal('thinking_budget' in body, false)
+      assert.equal('budget_tokens' in (body.thinking || {}), false)
+      if (bodies.length <= rejected) return new Response('unsupported parameter', { status: bodies.length % 2 ? 400 : 422 })
+      return new Response('data: [DONE]\n\n')
+    }
+    assert.deepEqual(await createChatService().send(windowMock(), {
+      ...payload, provider: { ...provider, type }, model, thinkingLevel: level
+    }), { ok: true })
+    assert.equal(bodies.length, rejected + 1)
+    const { model: sentModel, messages, input, stream, temperature, ...extras } = bodies.at(-1)
+    assert.equal(sentModel, model)
+    assert.deepEqual(extras, expected)
+    assert.deepEqual(lookups, type === 'anthropic' ? [`${provider.baseUrl}/models/${encodeURIComponent(model)}`] : [])
+  }
+})
+
 test('truncated streams and Responses failures are errors, not successful completions', async () => {
   for (const body of ['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
     'data: {"type":"response.failed","response":{"error":{"message":"failed upstream"}}}\n\n',

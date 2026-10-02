@@ -63,26 +63,18 @@ function groupScannedSkills(candidates) {
   }
   const entries = [...unique.entries()].map(([key, candidate]) => ({ key, candidate }))
   const roots = entries.filter(({ key }) => !entries.some(({ key: other }) => other !== key && key.startsWith(`${other}-`)))
-  const grouped = new Set()
   const found = []
   const publicItem = ({ path, name, description }) => ({ path, name, description })
 
   for (const root of roots) {
     const children = entries
       .filter(({ key }) => key !== root.key && key.startsWith(`${root.key}-`))
-      .map(({ key, candidate }) => {
-        grouped.add(key)
-        return candidate
-      })
-    grouped.add(root.key)
+      .map(({ candidate }) => candidate)
     found.push({
       ...publicItem(root.candidate),
       children: children.map(publicItem),
       items: [root.candidate, ...children].map(publicItem)
     })
-  }
-  for (const { key, candidate } of entries) {
-    if (!grouped.has(key)) found.push({ ...publicItem(candidate), children: [], items: [publicItem(candidate)] })
   }
   return found
 }

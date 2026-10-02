@@ -1,4 +1,4 @@
-import { APPDATA, USERPROFILE, exists, firstExists, launchExe } from './base.js'
+import { APPDATA, USERPROFILE, exists, firstExists } from './base.js'
 import { mergeJsonAgentProviders, mergeOpencodeMcp } from './agent-config.js'
 
 /** OpenCode Desktop（ai.opencode.desktop，Electron）：桌面 AI 编码 Agent */
@@ -28,11 +28,6 @@ const opencode = {
   },
   configPath() {
     return firstExists(this.configCandidates)
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 OpenCode Desktop' }
-    return launchExe(exe)
   },
   async injectMcp(servers) {
     const p = this.configPath() || this.configCandidates[0]

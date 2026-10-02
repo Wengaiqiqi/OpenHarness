@@ -1,4 +1,4 @@
-import { USERPROFILE, exists, firstExists, launchExe } from './base.js'
+import { USERPROFILE, exists, firstExists } from './base.js'
 import { mergeJsonAgentProviders } from './agent-config.js'
 
 /** ZCode（Z.ai AI IDE）：检测本机安装（含自定义安装路径），仅检测/启动 */
@@ -19,11 +19,6 @@ const zcode = {
   },
   configPath() {
     return firstExists(this.configCandidates)
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 ZCode' }
-    return launchExe(exe)
   },
   async injectMcp() {
     return { ok: false, message: 'ZCode 配置格式暂不支持直接注入，请在设置中手动添加' }

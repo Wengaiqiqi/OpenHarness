@@ -12,7 +12,6 @@ import { spawn } from 'node:child_process'
  *   clearrgn|<hwnd>            -> (无输出) 清除裁剪区域
  *   pidof|<hwnd>               -> pid:<val>
  *   chk|<hwnd>                 -> chk:<alive1|0>:<parent>:<vis>  窗口存活/父窗口/可见性快检
- *   findcon|<title>            -> con:<hwnd>:<vis> 按标题子串找控制台窗口（EnumWindows，能找到隐藏窗口）
  *   findnames|<csv>            -> hwnd:<val> 按进程名找主窗口（EnumWindows，能找到隐藏窗口）
  *
  * 指令/输出附带请求 ID；move/show 使用 ID 0，不产生响应。
@@ -35,13 +34,11 @@ public class OHWin {
   [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetFocus();
   [DllImport("user32.dll")] public static extern IntPtr SetParent(IntPtr h, IntPtr p);
-  [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int ht, bool r);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
   [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
-  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
@@ -125,25 +122,6 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
       'show'      { [OHWin]::ShowWindow([IntPtr][long]$p[1], [int]$p[2]) | Out-Null }
       'getrect'   { $r = New-Object OHWin+RECT; [OHWin]::GetWindowRect([IntPtr][long]$p[1], [ref]$r) | Out-Null; Write-Output ('rect:' + $r.Left + ',' + $r.Top + ',' + $r.Right + ',' + $r.Bottom) }
       'clientorigin' { $pt = New-Object OHWin+POINT; [OHWin]::ClientToScreen([IntPtr][long]$p[1], [ref]$pt) | Out-Null; Write-Output ('origin:' + $pt.X + ',' + $pt.Y) }
-      'findbytitle' { $w = Get-Process | Where-Object { $_.MainWindowTitle -like ('*' + $p[1] + '*') } | Select-Object -First 1; if ($w) { Write-Output ('hwnd:' + $w.MainWindowHandle) } else { Write-Output 'hwnd:0' } }
-      'findchild' { $kids = Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + [int]$p[1]) -ErrorAction SilentlyContinue; foreach ($k in $kids) { $w = Get-Process -Id $k.ProcessId -ErrorAction SilentlyContinue; if ($w -and $w.MainWindowHandle -ne 0) { Write-Output ('hwnd:' + $w.MainWindowHandle) } } }
-      'findbyport' { $w = Get-Process | Where-Object { $_.MainWindowTitle -like ('*--port ' + $p[1] + '*') } | Select-Object -First 1; if ($w -and $w.MainWindowHandle -ne 0) { Write-Output ('hwnd:' + $w.MainWindowHandle) } else { Write-Output 'hwnd:0' } }
-      'killport' {
-                    # netstat 解析比 Get-NetTCPConnection（CIM，1-3 秒）快一个数量级，释放标签不卡顿
-                    $pid2 = 0
-                    $lines = netstat -ano -p tcp 2>$null | Select-String (':' + [int]$p[1] + '\s')
-                    foreach ($ln in $lines) {
-                      if ($ln.ToString() -match 'LISTENING') {
-                        $tail = ($ln.ToString() -split '\s+')[-1]
-                        if ($tail -match '^\d+$') { $pid2 = [int]$tail; break }
-                      }
-                    }
-                    if ($pid2 -gt 0) { taskkill /T /F /PID $pid2 2>$null | Out-Null }
-                    else {
-                      $c = Get-NetTCPConnection -LocalPort ([int]$p[1]) -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-                      if ($c) { taskkill /T /F /PID $c.OwningProcess 2>$null | Out-Null }
-                    }
-                  }
       'hidebyport' {
                     $pid3 = 0
                     $lines2 = netstat -ano -p tcp 2>$null | Select-String (':' + [int]$p[1] + '\s')
@@ -173,67 +151,6 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                     $par2 = [OHWin]::GetParent($h2)
                     $vis2 = if ([OHWin]::IsWindowVisible($h2)) { 1 } else { 0 }
                     Write-Output ('chk:' + $alive2 + ':' + [long]$par2 + ':' + $vis2)
-                  }
-      'findcon'   {
-                    # 按标题子串找控制台窗口（含隐藏的 —— Get-Process MainWindowHandle 对隐藏窗口返回 0，必须走 EnumWindows）
-                    $script:conWant = [string]$p[1]
-                    $script:conH = [IntPtr]::Zero
-                    $script:conV = 0
-                    $cb = [OHWin+EnumProc]{
-                      param($h, $l)
-                      $cls = New-Object System.Text.StringBuilder 256
-                      [OHWin]::GetClassName($h, $cls, 256) | Out-Null
-                      if ($cls.ToString() -ne 'ConsoleWindowClass') { return $true }
-                      $txt = New-Object System.Text.StringBuilder 512
-                      [OHWin]::GetWindowText($h, $txt, 512) | Out-Null
-                      if ($txt.ToString().Contains($script:conWant)) {
-                        $script:conH = $h
-                        $script:conV = if ([OHWin]::IsWindowVisible($h)) { 1 } else { 0 }
-                        return $false
-                      }
-                      return $true
-                    }
-                    [OHWin]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
-                    Write-Output ('con:' + [long]$script:conH + ':' + $script:conV)
-                  }
-      'findconpid' {
-                    # 按进程树找控制台窗口（TUI 程序会改掉控制台标题，标题匹配存在竞态）：
-                    # hostPid 两代内的子孙进程拥有的 ConsoleWindowClass，优先可见/有面积的。
-                    # 进程表缓存 1.5s：Get-CimInstance 全表约 200-500ms，冷启动每 400ms 轮询一次
-                    # 会把命令队列打满，导致已打开的 harness 界面卡顿
-                    $hostPid2 = [int]$p[1]
-                    $tick4 = [Environment]::TickCount
-                    if (-not $script:crowsTs -or ($tick4 - $script:crowsTs) -gt 1500) {
-                      $script:crows = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
-                      $script:crowsTs = $tick4
-                    }
-                    $rows = $script:crows
-                    $script:cpids = @{}
-                    $script:cpids[$hostPid2] = 1
-                    foreach ($r0 in $rows) { if ($script:cpids.ContainsKey([int]$r0.ParentProcessId)) { $script:cpids[[int]$r0.ProcessId] = 1 } }
-                    foreach ($r0 in $rows) { if ($script:cpids.ContainsKey([int]$r0.ParentProcessId)) { $script:cpids[[int]$r0.ProcessId] = 1 } }
-                    $script:conFallback = [IntPtr]::Zero
-                    $script:conBest = [IntPtr]::Zero
-                    $cb = [OHWin+EnumProc]{
-                      param($h, $l)
-                      $wpid = 0
-                      [OHWin]::GetWindowThreadProcessId($h, [ref]$wpid) | Out-Null
-                      if (-not $script:cpids.ContainsKey([int]$wpid)) { return $true }
-                      $cls = New-Object System.Text.StringBuilder 128
-                      [OHWin]::GetClassName($h, $cls, 128) | Out-Null
-                      if ($cls.ToString() -ne 'ConsoleWindowClass') { return $true }
-                      $r = New-Object OHWin+RECT
-                      [OHWin]::GetWindowRect($h, [ref]$r) | Out-Null
-                      $w = [int]$r.Right - [int]$r.Left
-                      $ht = [int]$r.Bottom - [int]$r.Top
-                      if ($script:conFallback -eq [IntPtr]::Zero) { $script:conFallback = $h }
-                      if (($w -gt 100 -and $ht -gt 60) -or [OHWin]::IsWindowVisible($h)) { $script:conBest = $h; return $false }
-                      return $true
-                    }
-                    $script:conPidHit = [IntPtr]::Zero
-                    [OHWin]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
-                    $res = if ($script:conBest -ne [IntPtr]::Zero) { $script:conBest } else { $script:conFallback }
-                    Write-Output ('hwnd:' + [long]$res)
                   }
       'findnames' {
                     # 按进程名找主窗口（含隐藏的）。Electron 应用有多个同名子进程和若干同尺寸辅助顶层窗口

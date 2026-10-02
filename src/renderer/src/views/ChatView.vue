@@ -420,8 +420,9 @@ async function scrollToLatestTurn() {
 
 async function scrollReply(requestId) {
   await nextTick()
-  const el = [...(messagesEl.value?.querySelectorAll('.answer-scroll') || [])]
+  const replyEl = [...(messagesEl.value?.querySelectorAll('.answer-scroll') || [])]
     .find((node) => node.dataset.requestId === requestId)
+  const el = replyEl?.closest('.answer-card:only-child') ? messagesEl.value : replyEl
   if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80) el.scrollTop = el.scrollHeight
 }
 
@@ -601,9 +602,6 @@ onUnmounted(() => {
                       <el-icon :size="15"><FullScreen /></el-icon>
                     </button>
                   </div>
-                </div>
-                <div class="answer-status" :class="reply.status || 'done'">
-                  {{ reply.status === 'pending' ? '等待回答' : reply.status === 'streaming' ? '回答中' : reply.status === 'error' ? '回答失败' : reply.status === 'stopped' ? '已停止' : '回答完成' }}
                 </div>
                 <div class="answer-scroll" tabindex="0" :data-request-id="reply.requestId" :aria-label="`${reply.model || activeSession.model || '模型'}的回答，可滚动查看`">
                   <div v-if="reply.reasoning" class="msg-reasoning" :class="{ open: !!openReasonings[reply.requestId || `${turnIndex}-${replyIndex}`] }">
@@ -837,17 +835,28 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
   line-height: 1.7;
 }
-.answer-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+.answer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 12px;
+}
 .answer-card {
   display: flex;
-  flex: 0 1 320px;
   flex-direction: column;
-  width: min(100%, 320px);
+  gap: 12px;
   height: 320px;
   min-width: 0;
   padding: 16px;
   border: 1px solid var(--oh-border);
   border-radius: var(--oh-radius-lg);
+}
+.answer-card:only-child {
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+
+  .answer-scroll { overflow: visible; }
 }
 .answer-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .answer-avatar {
@@ -875,9 +884,6 @@ onUnmounted(() => {
   &:hover, &:focus-visible { background: var(--oh-hover); color: var(--oh-primary); }
   &:disabled { opacity: 0.4; cursor: default; }
 }
-.answer-status { margin: 12px 0; color: var(--oh-text-dim); font-size: 11px; }
-.answer-status.streaming { color: var(--oh-primary); }
-.answer-status.error { color: var(--oh-danger); }
 .answer-scroll {
   flex: 1;
   min-height: 0;

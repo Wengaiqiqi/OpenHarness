@@ -23,9 +23,6 @@ const kimi_code = {
   configPath() {
     return firstExists(this.configCandidates) || this.configCandidates[0]
   },
-  async launch() {
-    return { ok: false, message: 'Kimi Code 为 CLI 工具，请在终端中启动' }
-  },
   async configureModel({ models, model, token }) {
     return mergeTomlProvider(this.configPath(), { models, model, token })
   }

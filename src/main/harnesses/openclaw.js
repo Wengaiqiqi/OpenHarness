@@ -1,4 +1,4 @@
-import { USERPROFILE, APPDATA, exists, firstExists, launchExe } from './base.js'
+import { USERPROFILE, APPDATA, exists, firstExists } from './base.js'
 import { mergeJsonAgentProviders } from './agent-config.js'
 
 /** OpenClaw（原 Clawdbot/Moltbot）：个人 AI 助理网关，检测常见安装位置 */
@@ -26,11 +26,6 @@ const openclaw = {
   },
   configPath() {
     return firstExists(this.configCandidates)
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 OpenClaw（可通过 npm i -g openclaw 安装）' }
-    return launchExe(exe)
   },
   async injectMcp() {
     return { ok: false, message: 'OpenClaw 暂不支持直接注入，请在 Gateway 配置中手动添加' }

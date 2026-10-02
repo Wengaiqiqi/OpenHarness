@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import net from 'node:net'
 import bridge from './win32-bridge'
-import { launchExe, launchCliConsole } from '../harnesses/base'
+import { launchExe } from '../harnesses/base'
 import * as pty from '../pty'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -12,7 +12,6 @@ const exec = promisify(execFile)
 /** 剥离的窗口样式位：CAPTION|SYSMENU|THICKFRAME|MINIMIZEBOX|MAXIMIZEBOX */
 const STYLE_STRIP = 0x00cf0000
 const SW_SHOW = 8 // SW_SHOWNA：恢复可见性不抢走外部编辑器的输入焦点
-const SW_HIDE = 0
 const SW_RESTORE = 9
 
 // 多开：harnessId -> { hwnd, origStyle }；activeId 为当前显示的那个
@@ -35,26 +34,6 @@ export function isLatest(harnessId) {
 
 function clearLatestIf(id) {
   if (latestOpenId === id) latestOpenId = null
-}
-
-/**
- * 查找控制台窗口：优先按标题子串（findcon），TUI 程序会改掉控制台标题导致竞态，
- * 故同时按 hostPid 进程树匹配（findconpid）兜底 —— 两者任一命中即返回
- */
-async function findConsoleWindow(title, maxWaitMs = 15000, hostPid = 0) {
-  const deadline = Date.now() + maxWaitMs
-  while (Date.now() < deadline) {
-    const out = await bridge.send('findcon', title)
-    const m = /^con:(\d+):(\d+)$/.exec(out || '')
-    if (m && parseInt(m[1], 10) > 0) return parseInt(m[1], 10)
-    if (hostPid) {
-      const out2 = await bridge.send('findconpid', String(hostPid))
-      const m2 = /^hwnd:(\d+)$/.exec(out2 || '')
-      if (m2 && parseInt(m2[1], 10) > 0) return parseInt(m2[1], 10)
-    }
-    await sleep(400)
-  }
-  return 0
 }
 
 /**
@@ -189,32 +168,6 @@ export function startWatcher(processHints = []) {
   } catch {}
 }
 
-/** 按宿主 PID 找其子进程的主窗口句柄（conhost -> cmd 控制台窗口） */
-export async function findChildWindow(hostPid, maxWaitMs = 20000) {
-  const deadline = Date.now() + maxWaitMs
-  while (Date.now() < deadline) {
-    const out = await bridge.send('findchild', String(hostPid))
-    const m = /^hwnd:(\d+)$/.exec(out || '')
-    const n = parseInt(m?.[1], 10)
-    if (Number.isFinite(n) && n > 0) return n
-    await sleep(500)
-  }
-  return 0
-}
-
-/** 按本地服务监听端口找主窗口句柄（Web 型 CLI：dsh web --port N） */
-export async function findWindowByPort(port, maxWaitMs = 25000) {
-  const deadline = Date.now() + maxWaitMs
-  while (Date.now() < deadline) {
-    const out = await bridge.send('findbyport', String(port))
-    const m = /^hwnd:(\d+)$/.exec(out || '')
-    const n = parseInt(m?.[1], 10)
-    if (Number.isFinite(n) && n > 0) return n
-    await sleep(500)
-  }
-  return 0
-}
-
 /** 找一个当前空闲的 TCP 端口（listen 0 让 OS 分配，随即释放） */
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -315,52 +268,26 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
   }
 
   let pid = null
-  let coldStart = false
 
-  // CLI 型 harness：起一个带标题的控制台窗口跑 CLI（wt 优先 + cmd start 兜底），按标题找到窗口附着
   let hwnd = 0
-  if (cli) {
-    const title = `OH-CLI-${harnessId}`
-    let port = 0
-    if (webPort) {
-      // Web 型 CLI：动态分配空闲端口，替换命令里的 {port} —— 无需 killport，天然不冲突
-      port = await getFreePort()
-      cli = cli.replace('{port}', String(port))
-      // Web 型 harness：用 ConPTY 隐藏宿主（dsh 等会自拉起新控制台窗口，windowsHide 拦不住，
-      // ConPTY 虚拟终端让任何子进程都渲染进虚拟终端，全程无真实窗口），UI 用 iframe 加载
-      coldStart = true
-      const host = pty.openSilent(harnessId, cli)
-      if (!host.ok) return { ok: false, message: host.message || '隐藏宿主启动失败' }
-      const ok = await waitForPort(port, 60000)
-      // 兜底：服务进程自身（如 node 再启子进程）可能创建的控制台窗口，一并隐藏
-      bridge.send('hidebyport', String(port)).catch(() => {})
-      if (!ok) {
-        await pty.closeSilent(harnessId)
-        return { ok: false, message: `服务未能在预期时间内启动（${cli}）` }
-      }
-      webServices.set(harnessId, { port })
-      if (isLatest(harnessId)) activateWeb(harnessId)
-      return { ok: true, webUrl: `http://127.0.0.1:${port}`, serviceOnly: true }
+  if (webPort) {
+    // Web 型 CLI：动态分配空闲端口，替换命令里的 {port} —— 无需 killport，天然不冲突
+    const port = await getFreePort()
+    cli = cli.replace('{port}', String(port))
+    // Web 型 harness：用 ConPTY 隐藏宿主（dsh 等会自拉起新控制台窗口，windowsHide 拦不住，
+    // ConPTY 虚拟终端让任何子进程都渲染进虚拟终端，全程无真实窗口），UI 用 iframe 加载
+    const host = pty.openSilent(harnessId, cli)
+    if (!host.ok) return { ok: false, message: host.message || '隐藏宿主启动失败' }
+    const ok = await waitForPort(port, 60000)
+    // 兜底：服务进程自身（如 node 再启子进程）可能创建的控制台窗口，一并隐藏
+    bridge.send('hidebyport', String(port)).catch(() => {})
+    if (!ok) {
+      await pty.closeSilent(harnessId)
+      return { ok: false, message: `服务未能在预期时间内启动（${cli}）` }
     }
-    coldStart = true
-    // 静默优先：conhost 以 STARTF SW_HIDE 启动，控制台窗口创建即隐藏，
-    // 找到隐藏窗口附着进容器后再显示 —— 全程零弹窗
-    let launched = launchCliConsole(title, cli, { silent: true })
-    if (launched.ok) {
-      hwnd = await findConsoleWindow(title, 15000, launched.hostPid)
-    }
-    // 兜底：静默路径不可用时回退可见控制台（旧行为，附着前短暂闪现）
-    if (!hwnd) {
-      launched = launchCliConsole(title, cli)
-      if (!launched.ok) {
-        return { ok: false, message: `未能启动 ${cli}（命令可能未安装，可在终端直接运行 ${cli} 验证）` }
-      }
-      // 按 conhost 子进程 cmd 定位控制台窗口（标题会被 claude 等程序改掉，PID 链不受影响）
-      hwnd = await findChildWindow(launched.hostPid, 20000)
-      if (!hwnd) {
-        return { ok: false, message: `未能找到 ${cli} 的控制台窗口（命令可能未安装，可在终端直接运行 ${cli} 验证）` }
-      }
-    }
+    webServices.set(harnessId, { port })
+    if (isLatest(harnessId)) activateWeb(harnessId)
+    return { ok: true, webUrl: `http://127.0.0.1:${port}`, serviceOnly: true }
   } else {
     // 先找已运行的实例（findnames 也能找到隐藏窗口，如最小化到托盘的应用）
     hwnd = await findWindowByNamesFast(processHints, 2000, 500)
@@ -381,7 +308,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
         // 注意：此刻不能停看门钩子——ZCode 等 VS Code 系应用启动早期会自毁重建主窗口，
         // 重建的新窗口必须继续被停靠，否则以独立弹窗形式出现在屏幕上；
         // 钩子按 hwnd 去重，不会挪动我们已吸附进容器的窗口，停钩子推迟到稳定之后
-        const attach = await attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCold: false })
+        const attach = await attachNative({ harnessId, hwnd, parentHwnd, initialRect })
         if (!attach.ok) {
           attached.delete(harnessId)
           startWatcher(processHints)
@@ -428,7 +355,7 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
     }
   }
 
-  const attach = await attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCold: coldStart, restore: !coldStart })
+  const attach = await attachNative({ harnessId, hwnd, parentHwnd, initialRect, restore: true })
   if (!attach.ok) {
     return { ok: false, message: '附着应用窗口失败' }
   }
@@ -436,10 +363,6 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
   // 只有仍是最新打开目标时才激活/显示；过期冷启动登记后保持隐藏，切回时即时复用
   if (isLatest(harnessId)) {
     activate(harnessId, initialRect)
-    if (coldStart) {
-      // 冷启动窗口是隐藏着被附着的：定位完成后 RESTORE（清最小化态）再由 activate 的 SW_SHOW 显示
-      bridge.fire('show', hwnd, SW_RESTORE)
-    }
   } else {
     // 过期附着：停靠屏幕外（SW_HIDE 会触发托盘应用自毁窗口）
     parkOffscreen(attached.get(harnessId))
@@ -448,13 +371,10 @@ export async function embedApp({ harnessId, exePath, processHints, parentHwnd, i
 }
 
 /**
- * 执行窗口附着：视需要先隐藏（控制台）/还原（已运行实例），剥样式、设父窗口、贴容器矩形并登记
+ * 执行窗口附着：视需要先还原已运行实例，剥样式、设父窗口、贴容器矩形并登记
  */
-async function attachNative({ harnessId, hwnd, parentHwnd, initialRect, hideOnCold, restore }) {
-  if (hideOnCold) {
-    bridge.fire('show', hwnd, SW_HIDE)
-    await sleep(150)
-  } else if (restore) {
+async function attachNative({ harnessId, hwnd, parentHwnd, initialRect, restore }) {
+  if (restore) {
     // 已运行实例：先还原最大化/最小化状态，否则 Chromium 仍按最大化布局渲染，内容会被裁剪
     bridge.fire('show', hwnd, SW_RESTORE)
     await sleep(400)
@@ -555,8 +475,6 @@ function applyRgn(a, allowed, cur) {
 // ---- 越界看门狗：子窗口被内部拖动（如 VS Code 自定义标题栏）时自动拉回 ----
 // allowedRect 为当前激活嵌入允许占用的物理像素矩形（相对主窗口客户区）
 let allowedRect = null
-// 最近一次 allowedRect：离开工作台（停靠全部窗口）后仍保留，供 showActive 恢复基准
-let lastAllowedRect = null
 let clipTimer = null
 let clipBusy = false
 
@@ -577,7 +495,6 @@ export function setClipRect(rect) {
     return
   }
   allowedRect = rect || null
-  if (allowedRect) lastAllowedRect = allowedRect
   if (allowedRect) {
     const a = attached.get(activeId)
     if (a && !a.parked) reposition(allowedRect)
@@ -745,24 +662,6 @@ export function hideAll() {
   // 否则窗口会按容器矩形激活显示，直接盖在用户切过去的其他页面上
   latestOpenId = null
   for (const [, a] of attached) parkOffscreen(a)
-}
-
-/** 重新显示当前激活的附着窗口（从屏幕外停靠位挪回容器） */
-export function showActive() {
-  const a = attached.get(activeId)
-  if (!a) return
-  const rect = allowedRect || lastAllowedRect
-  if (rect) {
-    allowedRect = rect
-    a.lastRect = rect
-    bridge.fire(
-      'move', a.hwnd,
-      Math.round(rect.x), Math.round(rect.y),
-      Math.round(rect.width), Math.round(rect.height)
-    )
-  }
-  a.parked = false
-  bridge.fire('show', a.hwnd, SW_SHOW)
 }
 
 /**

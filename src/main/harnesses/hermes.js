@@ -1,4 +1,4 @@
-import { LOCALAPPDATA, USERPROFILE, exists, firstExists, launchExe } from './base.js'
+import { LOCALAPPDATA, USERPROFILE, exists, firstExists } from './base.js'
 import { mergeJsonAgentProviders } from './agent-config.js'
 
 /** Hermes（Nous Research hermes-agent）：个人 AI Agent，检测 CLI 与配置目录 */
@@ -22,11 +22,6 @@ const hermes = {
   },
   configPath() {
     return firstExists(this.configCandidates)
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 Hermes' }
-    return launchExe(exe)
   },
   async injectMcp() {
     return { ok: false, message: 'Hermes 配置格式暂不支持直接注入' }

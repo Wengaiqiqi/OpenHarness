@@ -155,10 +155,6 @@ async function doConfigure() {
   }
 }
 
-function isModelSelected(providerId, model) {
-  return (cfgSelection.value[providerId] || []).includes(model)
-}
-
 function toggleAllOf(providerId, checked) {
   const p = cfgProviders.value.find((x) => x.id === providerId)
   cfgSelection.value = checked
@@ -295,13 +291,6 @@ function clearSelection() {
 </template>
 
 <style scoped lang="scss">
-.page-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-
 .harness-list {
   display: flex;
   flex-direction: column;
@@ -335,16 +324,6 @@ function clearSelection() {
 }
 
 .h-badge-logo-dark {
-  filter: invert(1);
-}
-
-.h-badge-img {
-  width: 26px;
-  height: 26px;
-  object-fit: contain;
-}
-
-.h-badge-img-dark {
   filter: invert(1);
 }
 
@@ -443,43 +422,6 @@ function clearSelection() {
   gap: 12px;
   align-content: start;
   padding: 4px 2px;
-}
-
-.cfg-models {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.cfg-model {
-  padding: 5px 10px;
-  font-size: 12px;
-  font-family: Consolas, monospace;
-  color: var(--oh-text-2);
-  background: var(--oh-bg-input);
-  border: 1px solid var(--oh-border);
-  border-radius: 999px;
-  cursor: pointer;
-  transition:
-    border-color var(--oh-dur) var(--oh-ease),
-    background var(--oh-dur) var(--oh-ease),
-    color var(--oh-dur) var(--oh-ease);
-
-  &:hover {
-    border-color: var(--oh-primary);
-  }
-
-  &.on {
-    background: var(--oh-active);
-    border-color: var(--oh-primary);
-    color: var(--oh-primary);
-    font-weight: 600;
-  }
-}
-
-.cfg-none {
-  font-size: 12px;
-  color: var(--oh-text-dim);
 }
 
 .cfg-card {

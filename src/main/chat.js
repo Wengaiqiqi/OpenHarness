@@ -62,6 +62,23 @@ export function createChatService() {
         armWatchdog()
       }
 
+      if (type === 'anthropic') {
+        // Messages 必须传总输出额度，使用模型接口返回的额度，避免写死思考上限。
+        let info = null
+        try {
+          const metadata = await fetch(url.replace(/\/messages$/, `/models/${encodeURIComponent(model)}`), {
+            headers, signal: controller.signal
+          })
+          if (metadata.ok) info = await metadata.json()
+          else await metadata.body?.cancel().catch(() => {})
+        } catch (err) {
+          if (controller.signal.aborted) throw err
+        }
+        if (Number.isSafeInteger(info?.max_tokens) && info.max_tokens > 0) baseBody.max_tokens = info.max_tokens
+        if (info?.capabilities?.thinking?.supported === false) candidates = [{}]
+        // ponytail: 无模型元数据的网关依赖服务端默认；若要求 max_tokens，需网关提供模型额度。
+      }
+
       let res = await runFetch()
       // /responses 端点不存在（404，如智普只支持 chat/completions）→
       // 自动把协议降级为 OpenAI Compatible 重试（流式解析/思考链同步切换）
@@ -199,7 +216,6 @@ function buildBody(type, provider, model, messages) {
     const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
     return {
       model,
-      max_tokens: 4096,
       stream: true,
       ...(system ? { system } : {}),
       messages: messages
@@ -240,14 +256,11 @@ function extractDelta(type, json) {
 // 按模型族生成思考参数候选链（首选 → 逐级降级），HTTP 400/422 时沿链重试
 function thinkingCandidates(type, model, level) {
   const m = (model || '').toLowerCase()
-  // Anthropic：thinking.budget_tokens（最低 1024，且必须小于 max_tokens）
+  // Anthropic：自适应思考，由模型按强度偏好自行分配预算。
   if (type === 'anthropic') {
-    if (level === 'off') {
-      // 必须开启思考而用户关闭 → 按最低思考适配
-      return [{}, { thinking: { type: 'enabled', budget_tokens: 1024 }, max_tokens: 9216 }]
-    }
-    const budget = level === 'low' ? 2048 : level === 'high' ? 16384 : 8192
-    return [{ thinking: { type: 'enabled', budget_tokens: budget }, max_tokens: budget + 8192 }, {}]
+    if (level === 'off') return [{ thinking: { type: 'disabled' } }, { output_config: { effort: 'low' } }, {}]
+    return [{ thinking: { type: 'adaptive' }, output_config: { effort: level } },
+      { thinking: { type: 'adaptive' } }, { output_config: { effort: level } }, {}]
   }
   // OpenAI Responses：reasoning.effort
   if (type === 'openai-responses') {
@@ -256,14 +269,14 @@ function thinkingCandidates(type, model, level) {
   }
   // GLM / 豆包系：thinking.type 开关（GLM-5.3 等强制开启，off 被拒时回退 enabled）
   if (/glm|doubao/.test(m)) {
-    if (level === 'off') return [{ thinking: { type: 'disabled' } }, { thinking: { type: 'enabled' } }]
-    return [{ thinking: { type: 'enabled' } }, { thinking: { type: 'disabled' } }]
+    if (level === 'off') return [{ thinking: { type: 'disabled' } }, { thinking: { type: 'enabled' } }, {}]
+    return [{ thinking: { type: 'enabled' } }, { thinking: { type: 'disabled' } }, {}]
   }
-  // Qwen：enable_thinking + thinking_budget
+  // Qwen3.8 Omni 使用原生强度参数；其他 Qwen 仅传开关，预算沿用服务端默认。
+  if (/qwen3\.8-omni/.test(m)) return [{ reasoning_effort: level === 'off' ? 'none' : level }, {}]
   if (/qwen/.test(m)) {
     if (level === 'off') return [{ enable_thinking: false }, {}]
-    const budget = level === 'low' ? 1024 : level === 'high' ? 24576 : 8192
-    return [{ enable_thinking: true, thinking_budget: budget }, { enable_thinking: true }, {}]
+    return [{ enable_thinking: true }, {}]
   }
   // DeepSeek reasoner：思考不可控，原样发送
   if (/deepseek/.test(m)) return [{}]

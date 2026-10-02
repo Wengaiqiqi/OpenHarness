@@ -1,4 +1,4 @@
-import { APPDATA, USERPROFILE, exists, firstExists, injectMcpIntoFile, launchExe } from './base.js'
+import { APPDATA, USERPROFILE, exists, firstExists, injectMcpIntoFile } from './base.js'
 import path from 'node:path'
 import { mergeClaudeCodeSettings } from './agent-config.js'
 
@@ -44,11 +44,6 @@ const claudeCode = {
     return process.env.CLAUDE_CONFIG_DIR
       ? path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json')
       : path.join(USERPROFILE, '.claude.json')
-  },
-  async launch() {
-    const exe = firstExists(this.exeCandidates)
-    if (!exe) return { ok: false, message: '未检测到 Claude Code（可通过 npm i -g @anthropic-ai/claude-code 安装）' }
-    return launchExe(exe)
   },
   async injectMcp(servers) {
     return injectMcpIntoFile(this.mcpConfigPath(), servers, 'mcpServers')

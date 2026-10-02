@@ -250,6 +250,23 @@ test('compiled ChatView sends one prompt to six models and routes replies indepe
   assert.equal(chat.state.requestPending.value, false)
 })
 
+test('single replies scroll the conversation and multiple replies scroll their own content', async () => {
+  const chat = await setupChat()
+  const inline = { dataset: { requestId: 'inline' }, closest: () => ({}), scrollHeight: 500, scrollTop: 0, clientHeight: 500 }
+  const card = { dataset: { requestId: 'card' }, closest: () => null, scrollHeight: 600, scrollTop: 270, clientHeight: 280 }
+  const messages = { querySelectorAll: () => [inline, card], scrollHeight: 1200, scrollTop: 650, clientHeight: 500 }
+  chat.state.messagesEl.value = messages
+  await chat.state.scrollReply('inline')
+  assert.equal(messages.scrollTop, 1200)
+  assert.equal(inline.scrollTop, 0)
+  messages.scrollTop = 100
+  await chat.state.scrollReply('inline')
+  assert.equal(messages.scrollTop, 100)
+  await chat.state.scrollReply('card')
+  assert.equal(card.scrollTop, 600)
+  assert.equal(messages.scrollTop, 100)
+})
+
 test('reply actions copy source text and render safe Markdown in the expanded answer', async () => {
   const chat = await setupChat()
   const content = '# Title\n\n- item\n\n`code` [site](https://example.com) [bad](javascript:alert(1)) <img src=x onerror=alert(1)>'
